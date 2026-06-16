@@ -2,33 +2,42 @@
 
 ## Status: staging is LIVE on hetzner1
 
-Slipstream is already running under **pm2** on hetzner1, bound to `127.0.0.1:3210`,
-serving the deterministic (grounded) engine. It's `pm2 save`d, so it survives reboots.
+Slipstream runs under **pm2** on hetzner1, bound to `127.0.0.1:3210`, serving the
+deterministic (grounded) engine. It's `pm2 save`d, so it survives reboots, and it's
+**path-prefix aware** (all API calls are relative) — it works at the domain root *or*
+behind a sub-path.
 
 ```bash
-pm2 status slipstream          # → online, id 7
+pm2 status slipstream
 curl -s http://127.0.0.1:3210/api/health    # {"status":"ok","llm":false,...}
 ```
 
-What's **not** done (needs your sudo — the privileged cutover):
+## Go-live via studio.apit.fun/slipstream/  (recommended — no DNS, no cert)
 
-## Public cutover (owner, ~2 min)
+Mounts Slipstream under the existing `studio.apit.fun` (already has DNS + TLS). One
+vhost change, then reload. Needs your sudo:
 
-1. **DNS** — add `slipstream.apit.fun` the same way as the other `*.apit.fun` apps
-   (Cloudflare record pointing at this host).
-2. **Install the vhost:**
-   ```bash
-   sudo cp deploy/slipstream.apit.fun.conf /etc/nginx/sites-available/slipstream.apit.fun
-   sudo ln -s ../sites-available/slipstream.apit.fun /etc/nginx/sites-enabled/slipstream.apit.fun
-   sudo nginx -t && sudo systemctl reload nginx
-   ```
-3. **Verify:**
-   ```bash
-   curl -I https://slipstream.apit.fun/api/health
-   ```
+```bash
+cd ~/slipstream
+sudo cp deploy/studio.apit.fun.conf /etc/nginx/sites-available/studio.apit.fun
+sudo nginx -t && sudo systemctl reload nginx
+curl -s https://studio.apit.fun/slipstream/api/health     # verify
+```
 
-The vhost mirrors `studio.apit.fun` (same listen address + `porsche-game.crt`). Swap to
-the wildcard `*.apit.fun` Let's Encrypt cert if you'd rather.
+→ Live at **https://studio.apit.fun/slipstream/**
+
+`deploy/studio.apit.fun.conf` is the full current studio vhost with only a
+`location /slipstream/` block added (proxies to `:3210`, strips the prefix). The
+existing studio app at `/` is untouched. `nginx -t` will catch any typo before reload.
+
+Verified locally by simulating the prefix-stripping proxy:
+`/slipstream/api/health` → 200 JSON, `/slipstream/` → 200 HTML, `/slipstream/styles.css` → 200 CSS.
+
+## Alternative: dedicated subdomain slipstream.apit.fun  (needs a DNS record)
+
+If you'd rather have its own subdomain, use `deploy/slipstream.apit.fun.conf` and add a
+`slipstream.apit.fun` DNS record (Cloudflare, like the other `*.apit.fun` apps), then
+install that vhost + reload.
 
 ## Optional: enable the Claude path
 
@@ -37,7 +46,7 @@ The deterministic engine needs no key. To turn on Claude enrichment (Sonnet 4.6 
 ```bash
 cd ~/slipstream
 npm install @anthropic-ai/sdk
-# set ANTHROPIC_API_KEY (and optional SLIPSTREAM_MODEL) in ecosystem.config.cjs env
+# set ANTHROPIC_API_KEY (+ optional SLIPSTREAM_MODEL) in ecosystem.config.cjs env
 pm2 restart slipstream --update-env
 ```
 

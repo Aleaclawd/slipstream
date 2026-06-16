@@ -1,4 +1,6 @@
 // Slipstream SPA — talks to the local API and renders the grounded action queue.
+// API calls are RELATIVE to the page URL so the app works both at the domain root
+// (http://host:3210/) and behind a path prefix (https://studio.apit.fun/slipstream/).
 const $ = (id) => document.getElementById(id);
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -205,7 +207,7 @@ async function analyze() {
   btn.disabled = true;
   $('meta').textContent = 'analyzing…';
   try {
-    const res = await fetch('/api/extract', {
+    const res = await fetch('api/extract', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ transcript, useLlm: $('useLlm').checked }),
@@ -224,7 +226,7 @@ async function analyze() {
 async function doExport(kind) {
   if (!last) return;
   if (kind === 'webhook') {
-    const res = await fetch('/api/export/webhook', {
+    const res = await fetch('api/export/webhook', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ result: last.result, meta: last.meta }),
@@ -235,7 +237,7 @@ async function doExport(kind) {
     $('modal').hidden = false;
     return;
   }
-  const res = await fetch(`/api/export/${kind}`, {
+  const res = await fetch(`api/export/${kind}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(kind === 'json' ? last : { result: last.result }),
@@ -251,7 +253,7 @@ async function doExport(kind) {
 // ---- wiring ----
 $('analyze').addEventListener('click', analyze);
 $('loadSample').addEventListener('click', async () => {
-  $('transcript').value = await (await fetch('/api/sample')).text();
+  $('transcript').value = await (await fetch('api/sample')).text();
 });
 document.querySelectorAll('[data-export]').forEach((b) =>
   b.addEventListener('click', () => doExport(b.dataset.export))
@@ -263,7 +265,7 @@ $('modal').addEventListener('click', (e) => {
 
 (async () => {
   try {
-    const h = await (await fetch('/api/health')).json();
+    const h = await (await fetch('api/health')).json();
     $('status').innerHTML = h.llm
       ? `<span class="dot">●</span> Claude ${esc(h.model)}`
       : `<span class="dot off">●</span> deterministic engine`;

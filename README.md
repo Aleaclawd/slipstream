@@ -100,8 +100,9 @@ pre-fill (60d) → agentic auto-follow-up + SSO/security (90d). Full plan in
 ## Running live
 
 A staging instance runs under pm2 on the host (`127.0.0.1:3210`, deterministic
-engine). Public cutover (`slipstream.apit.fun`) + the nginx vhost and pm2 config
-are in [`deploy/`](deploy/) — see [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+engine). The app is path-prefix aware, so it goes live at
+**`https://studio.apit.fun/slipstream/`** with a single nginx `location` block
+(no new DNS/cert) — full vhost + steps in [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ```bash
 pm2 start ecosystem.config.cjs && pm2 save
