@@ -1,46 +1,56 @@
-# Deploying Slipstream
+# Deploying Slipstream (private / Tailscale-only)
 
-## Status: staging is LIVE on hetzner1
+## Status: live PRIVATELY on hetzner1
 
-Slipstream runs under **pm2** on hetzner1, bound to `127.0.0.1:3210`, serving the
-deterministic (grounded) engine. `pm2 save`d (survives reboots), and path-prefix aware
-(all API calls relative) — works at a domain root or behind a sub-path.
+Slipstream runs under **pm2**, bound to the **Tailscale IP `100.124.131.86:3210`** — it is
+**not** on the public interface (a request to `127.0.0.1:3210` or the public IP is refused).
+Deterministic (grounded) engine; `pm2 save`d.
+
+Reachable **right now from any device on the tailnet** (Slipstream at the root, no nginx needed):
+
+```
+http://100.124.131.86:3210/
+```
 
 ```bash
 pm2 status slipstream
-curl -s http://127.0.0.1:3210/api/health    # {"status":"ok","llm":false,...}
+curl -s http://100.124.131.86:3210/api/health    # {"status":"ok","llm":false,...}
 ```
 
-## Go-live at studio.911fund.io/slipstream/  (primary)
+## Private go-live at studio.911fund.io/slipstream/  (Tailscale-only)
 
-`studio.911fund.io` is a **new** subdomain (not yet configured), so two owner steps:
+The vhost (`deploy/studio.911fund.io.conf`) binds the Tailscale IP only — mirroring
+`studio.apit.fun` / `jose.911fund.io`. Two owner steps:
 
-**1. Cloudflare DNS** — add `studio.911fund.io` (proxied, like `turbo`/`skills.911fund.io`)
-pointing at this host. Cloudflare Universal SSL covers `*.911fund.io`, so public TLS is
-automatic; the origin uses the shared `porsche-game.crt` (Full mode).
+**1. Make `studio.911fund.io` resolve to the Tailscale IP for tailnet devices.** Pick one:
+- **Cloudflare DNS-only (grey-cloud) A record** `studio.911fund.io → 100.124.131.86` — simplest.
+  It resolves everywhere, but `100.124.131.86` is a Tailscale CGNAT address, so it's only
+  *reachable* from the tailnet. (Must be DNS-only / unproxied — Cloudflare can't proxy a
+  private IP.)
+- **Tailscale MagicDNS** split-DNS / a custom record, or
+- per-device `/etc/hosts`: `100.124.131.86  studio.911fund.io`.
 
-**2. nginx vhost** (needs sudo):
+**2. Install the vhost (needs sudo):**
 ```bash
 cd ~/slipstream
 sudo cp deploy/studio.911fund.io.conf /etc/nginx/sites-available/studio.911fund.io
 sudo ln -s ../sites-available/studio.911fund.io /etc/nginx/sites-enabled/studio.911fund.io
 sudo nginx -t && sudo systemctl reload nginx
-curl -sk https://studio.911fund.io/slipstream/api/health
+# from a tailnet device:
+curl -k https://studio.911fund.io/slipstream/api/health
 ```
 
-→ Live at **https://studio.911fund.io/slipstream/** (the bare domain redirects there).
+→ Private at **https://studio.911fund.io/slipstream/** (bare domain redirects there). TLS is
+the self-signed `porsche-game.crt`, so browsers warn — expected for a private service (or use
+`http://`). Path serving verified via a simulated prefix-stripping proxy.
 
-The app uses relative paths, so it works correctly under the `/slipstream/` prefix — verified
-by simulating the prefix-stripping proxy (`/slipstream/api/health` → 200 JSON,
-`/slipstream/` → 200 HTML, `/slipstream/styles.css` → 200 CSS).
+## Going public later
 
-> **Standalone — does not touch the studio.** Slipstream gets its own subdomain, its own
-> nginx vhost, and its own pm2 process (`:3210`). It is **not** mounted on, and does not
-> modify, `studio.apit.fun` (the Paperclip studio) or any existing service.
-
-## Alternative subdomain
-
-- `deploy/slipstream.apit.fun.conf` — same standalone setup on `slipstream.apit.fun` instead.
+When you want it public: in `deploy/studio.911fund.io.conf` change the `listen 100.124.131.86:...`
+lines to public (`listen 443 ssl; listen [::]:443 ssl;`), switch the Cloudflare record to
+**proxied** (orange cloud → Universal SSL handles public TLS), and set the pm2 app back to a
+normal bind (`HOST=127.0.0.1` in `ecosystem.config.cjs`, with the vhost proxying `127.0.0.1:3210`),
+then `pm2 restart slipstream --update-env` + reload nginx.
 
 ## Optional: enable the Claude path
 

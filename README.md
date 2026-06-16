@@ -99,10 +99,11 @@ pre-fill (60d) → agentic auto-follow-up + SSO/security (90d). Full plan in
 
 ## Running live
 
-A staging instance runs under pm2 on the host (`127.0.0.1:3210`, deterministic
-engine). Target go-live is **`https://studio.911fund.io/slipstream/`** (vhost in
-[`deploy/studio.911fund.io.conf`](deploy/studio.911fund.io.conf)); the frontend uses
-relative paths so it works under the prefix. Steps in [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+**Private (Tailscale-only) for now.** Runs under pm2 bound to the host's Tailscale IP
+(`100.124.131.86:3210`) — not on the public interface. Reachable on the tailnet right now at
+`http://100.124.131.86:3210/`; target hostname is **`https://studio.911fund.io/slipstream/`**
+(Tailscale-bound vhost in [`deploy/studio.911fund.io.conf`](deploy/studio.911fund.io.conf)).
+Setup + how to go public later: [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ```bash
 pm2 start ecosystem.config.cjs && pm2 save

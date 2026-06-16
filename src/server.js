@@ -22,6 +22,9 @@ import { analyzeWithClaude, llmConfigured, LlmUnavailable, DEFAULT_MODEL } from 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3210);
+// Bind address. Default 0.0.0.0 for portability; set HOST to a specific interface
+// (e.g. the Tailscale IP) to keep the app off the public interface — private by binding.
+const HOST = process.env.HOST || '0.0.0.0';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -182,8 +185,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`Slipstream running →  http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Slipstream running →  http://${HOST}:${PORT}`);
   console.log(`  Claude enrichment: ${llmConfigured() ? `on (${DEFAULT_MODEL})` : 'off (deterministic engine)'}`);
 });
 

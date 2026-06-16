@@ -11,6 +11,7 @@ module.exports = {
       time: true,
       env: {
         PORT: '3210',
+        HOST: '100.124.131.86', // Tailscale IP — private (not on the public interface)
         // ANTHROPIC_API_KEY: 'sk-ant-...',     // optional — enables Claude enrichment
         // SLIPSTREAM_MODEL: 'claude-sonnet-4-6', // optional — claude-haiku-4-5 (cheap) / claude-opus-4-8 (premium)
       },
