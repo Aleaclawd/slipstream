@@ -22,17 +22,20 @@ inheritance, with no DNS change and no new cert** — just one nginx vhost updat
 /slipstream/` block added (in the Tailscale-bound server block, proxying to the app). The
 studio at `/` (→ `127.0.0.1:3100`) is untouched.
 
+`studio.apit.fun` is enabled as a **real file in `sites-enabled/`** (not a symlink), so copy
+over that exact path:
+
 ```bash
 cd ~/slipstream
-sudo cp deploy/studio.apit.fun.conf /etc/nginx/sites-available/studio.apit.fun
+sudo cp deploy/studio.apit.fun.conf /etc/nginx/sites-enabled/studio.apit.fun
 sudo nginx -t && sudo systemctl reload nginx
 # from a tailnet device:
-curl -k https://studio.apit.fun/slipstream/api/health
+curl https://studio.apit.fun/slipstream/api/health
 ```
 
-→ Private at **https://studio.apit.fun/slipstream/**. TLS is the existing self-signed
-`porsche-game.crt`, so browsers warn — expected for an internal service. `nginx -t` validates
-before reload, so a typo can't take the studio down.
+→ Private at **https://studio.apit.fun/slipstream/**. TLS reuses the existing **Let's Encrypt
+cert** for `apit.fun` (the conf preserves it verbatim), so it's a **valid cert — no browser
+warning**. `nginx -t` validates before reload, so a typo can't take the studio down.
 
 ## Going public later
 
