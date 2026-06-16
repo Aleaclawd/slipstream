@@ -97,6 +97,16 @@ MVP (this repo) → hosted app + grounding library (30d) → CRM write-back + RF
 pre-fill (60d) → agentic auto-follow-up + SSO/security (90d). Full plan in
 [`docs/BUSINESS-PLAN.md`](docs/BUSINESS-PLAN.md).
 
+## Running live
+
+A staging instance runs under pm2 on the host (`127.0.0.1:3210`, deterministic
+engine). Public cutover (`slipstream.apit.fun`) + the nginx vhost and pm2 config
+are in [`deploy/`](deploy/) — see [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
+
+```bash
+pm2 start ecosystem.config.cjs && pm2 save
+```
+
 ## License
 
 MIT — see [`LICENSE`](LICENSE).
