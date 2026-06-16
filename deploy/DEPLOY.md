@@ -34,11 +34,13 @@ Want it under a path instead (`studio.911fund.io/slipstream/`)? Change the vhost
 `location /` to `location /slipstream/` with `proxy_pass http://127.0.0.1:3210/;` (trailing
 slash) — the app already handles the prefix (verified via a simulated proxy).
 
-## Alternatives
+> **Standalone — does not touch the studio.** Slipstream gets its own subdomain, its own
+> nginx vhost, and its own pm2 process (`:3210`). It is **not** mounted on, and does not
+> modify, `studio.apit.fun` (the Paperclip studio) or any existing service.
 
-- `deploy/studio.apit.fun.conf` — mount at `studio.apit.fun/slipstream/` (that domain already
-  exists, so it's DNS-free — only an nginx reload).
-- `deploy/slipstream.apit.fun.conf` — a dedicated `slipstream.apit.fun` subdomain.
+## Alternative subdomain
+
+- `deploy/slipstream.apit.fun.conf` — same standalone setup on `slipstream.apit.fun` instead.
 
 ## Optional: enable the Claude path
 
