@@ -147,6 +147,10 @@ button:disabled { opacity: .5; cursor: not-allowed; transform: none; }
 
 /* modal */
 .modal { position: fixed; inset: 0; background: #04080cdd; display: flex; align-items: center; justify-content: center; z-index: 10; padding: 20px; }
+/* `display:flex` above would override the `hidden` attribute, so re-hide explicitly.
+   (Higher specificity than `.modal`; keeps the modal closed until JS shows it.) */
+.modal[hidden] { display: none; }
+[hidden] { display: none !important; }
 .modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); max-width: 760px; width: 100%; max-height: 80vh; display: flex; flex-direction: column; }
 .modal-head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); font-weight: 600; }
 .modal pre { margin: 0; padding: 16px 18px; overflow: auto; font: 400 12px/1.5 "JetBrains Mono", monospace; color: var(--ink); }
