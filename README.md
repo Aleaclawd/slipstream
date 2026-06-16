@@ -45,22 +45,32 @@ Run the engine tests:
 npm test           # node --test
 ```
 
+### Views
+
+The result opens in a tabbed workspace, every item grounded to a transcript line:
+
+- **Brief** — pains, requirements, objections, competitors, demo/POC prep, RFP/security seed rows, follow-up email, CRM fields
+- **Mind Map** — radial map of the deal (pains, stakeholders, requirements, competitors, next steps)
+- **Kanban** — action board (Now / Next / Later), drag cards; teal = call commitment, blue = AI next-best-action
+- **Steps** — the recommended play as a numbered sequence
+- **Scorecard** — multi-signal **MEDDPICC** deal-health gauge + per-dimension bars (the 2026 enterprise standard)
+- **Risks** — MEDDPICC coverage radar + flagged risks (proactive signal synthesis)
+- **Stakeholders** — buying-committee view + talk-distribution (multithreading; Gartner: 6–10 stakeholders/deal)
+- **Battlecards** — auto competitor intel (their angle / our counter)
+
 ### Optional: Claude enrichment
 
-The deterministic engine always runs offline. For higher-quality extraction,
-install the SDK and set a key — the same grounded contract is returned, with
-better language understanding:
+The deterministic engine always runs offline (instant, zero-dep). For sharper, fuller
+extraction, tick **Use Claude** in the UI — the same grounded contract, two backends, tried
+in order:
 
-```bash
-npm install @anthropic-ai/sdk
-export ANTHROPIC_API_KEY=sk-ant-...
-# default model is claude-sonnet-4-6 (quality + structured output at SaaS unit cost);
-# SLIPSTREAM_MODEL=claude-haiku-4-5 for the budget tier, or claude-opus-4-8 for premium.
-npm start
-```
+1. **`claude` CLI** — if the host has an authed Claude Code login, Slipstream shells out to it
+   (auto-refreshing OAuth, **no API key or SDK needed**). Default model **haiku** (~90s);
+   override with `SLIPSTREAM_CLI_MODEL`.
+2. **API key + SDK** — set `ANTHROPIC_API_KEY` and `npm i @anthropic-ai/sdk` for the
+   structured-outputs path (`SLIPSTREAM_MODEL`, default `claude-sonnet-4-6`).
 
-Then tick **Use Claude** in the UI (it silently falls back to the deterministic
-engine if the key/SDK is missing).
+If neither is available it silently falls back to the deterministic engine.
 
 ## How it works
 

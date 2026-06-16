@@ -1,5 +1,5 @@
 // engine.js — deterministic, zero-dependency transcript extraction engine
-import { emptyResult, normalizeResult } from './schema.js';
+import { emptyResult, normalizeResult, MEDDPICC_DIMENSIONS } from './schema.js';
 
 // ─── Parser ──────────────────────────────────────────────────────────────────
 
@@ -330,6 +330,91 @@ export function analyzeTranscript(text) {
     body,
   };
 
+  // ── MVP intelligence: deal health (MEDDPICC), risks, next-best-actions, battlecards, analytics ──
+  const findU = (re) => utterances.find((u) => re.test(u.text));
+  const evOf = (u) => (u ? mkEvidence(u) : null);
+  const metricU = findU(/two analysts|50 million|\b\d+\s*(million|analysts|engineers|events)|\bROI\b/i);
+  const ebU = findU(/\bCFO\b|budget|economic buyer|Lena/i);
+  const pocU = findU(/\bPOC\b|proof of concept|two weeks|evaluation|that would move/i);
+  const paperU = findU(/SOC 2|data residency|compliance|procurement|legal|data-processing|security bar/i);
+  const champU = findU(/most need|fix this quarter|move this forward|show us a working/i);
+  const reqCount = result.requirements.length;
+  const highPainCount = highPains.length;
+  const has = (c, hi, lo) => (c ? hi : lo);
+  const dimScore = {
+    metrics: has(metricU, 80, 35),
+    economic_buyer: has(economicBuyer || ebU, 80, 25),
+    decision_criteria: Math.min(90, 40 + reqCount * 8),
+    decision_process: has(pocU, 80, 40),
+    paper_process: has(paperU, 70, 30),
+    identified_pain: Math.min(95, 45 + highPainCount * 15),
+    champion: has(champU, 78, 42),
+    competition: has(seenCompetitors.size > 0, 70, 50),
+  };
+  const dimEvidence = {
+    metrics: evOf(metricU),
+    economic_buyer: evOf(ebU),
+    decision_criteria: result.requirements[0]?.evidence ?? null,
+    decision_process: evOf(pocU),
+    paper_process: evOf(paperU),
+    identified_pain: (highPains[0] ?? result.pains[0])?.evidence ?? null,
+    champion: evOf(champU),
+    competition: result.competitors[0]?.evidence ?? null,
+  };
+  const dimNotes = {
+    metrics: metricU ? 'Quantified impact captured (analysts, event volume).' : 'No quantified business metric yet.',
+    economic_buyer: economicBuyer || ebU ? `Economic buyer in play${economicBuyer ? ': ' + economicBuyer : ''}.` : 'No economic buyer identified.',
+    decision_criteria: reqCount ? `${reqCount} technical requirements surfaced.` : 'Decision criteria still unclear.',
+    decision_process: pocU ? 'POC / evaluation path discussed.' : 'Decision process not yet mapped.',
+    paper_process: paperU ? 'Security/compliance steps named (SOC 2, residency).' : 'Procurement / paper process unknown.',
+    identified_pain: highPainCount ? `${highPainCount} high-severity pain(s) identified.` : 'Pain not strongly established.',
+    champion: champU ? 'An engaged internal advocate is pushing the deal.' : 'No clear champion yet.',
+    competition: seenCompetitors.size ? `Competition known: ${[...seenCompetitors].join(', ')}.` : 'Competitive landscape unknown.',
+  };
+  const dimensions = MEDDPICC_DIMENSIONS.map((d) => ({ key: d.key, label: d.label, score: dimScore[d.key], note: dimNotes[d.key], evidence: dimEvidence[d.key] }));
+  result.dealHealth = { score: Math.round(dimensions.reduce((n, d) => n + d.score, 0) / dimensions.length), dimensions };
+
+  const risks = [];
+  const pushRisk = (text, severity, evidence) => { if (text && !risks.some((r) => r.text === text)) risks.push({ text, severity, evidence: evidence ?? null }); };
+  for (const o of result.objections) pushRisk(o.text.slice(0, 140), /non-starter|burned|can a startup|security bar/i.test(o.text) ? 'high' : 'med', o.evidence);
+  for (const d of dimensions) if (d.score < 40) pushRisk(`${d.label} gap — ${d.note}`, d.key === 'economic_buyer' || d.key === 'paper_process' ? 'high' : 'med', d.evidence);
+  if (seenCompetitors.size) pushRisk(`Competitive evaluation vs ${[...seenCompetitors].join(', ')}`, 'med', result.competitors[0]?.evidence);
+  result.risks = risks;
+
+  const nba = [];
+  const addNba = (action, rationale, priority, evidence) => nba.push({ action, rationale, priority, evidence: evidence ?? null });
+  if (!(economicBuyer || ebU)) addNba('Multithread to the economic buyer (CFO / budget owner)', 'No economic buyer is engaged yet — enterprise deals stall in procurement without one.', 'P1', null);
+  else if (ebU) addNba(`Get ${economicBuyer || 'the economic buyer'} engaged on the next call`, 'Budget owner is named but not yet bought into the technical value.', 'P2', evOf(ebU));
+  if (paperU || result.requirements.some((r) => r.category === 'security')) addNba('Send the security pack (SOC 2 + DPA) and pre-fill the security questionnaire', 'A security/compliance bar was raised — de-risk it early to avoid late-stage paper-process death.', 'P1', evOf(paperU));
+  if (result.requirements.some((r) => /Snowflake|write.?back/i.test(r.text + (r.evidence?.quote || '')))) addNba('Confirm Snowflake write-back feasibility before the POC', 'Write-back was flagged a non-starter — validate it before investing in the POC.', 'P1', null);
+  if (pocU) addNba('Scope a 2-week POC on their own data', 'A working POC on their data was explicitly requested and would move the deal forward.', 'P1', evOf(pocU));
+  for (const name of seenCompetitors) addNba(`Prepare a battlecard vs ${name}`, `${name} is in the evaluation — arm the champion with crisp differentiation.`, 'P2', result.competitors.find((c) => c.name === name)?.evidence);
+  result.nextBestActions = nba;
+
+  const angles = (name) => {
+    if (/gong/i.test(name)) return { theirAngle: 'Conversation intelligence — records & analyzes calls for AE managers.', ourCounter: 'Slipstream owns the SE execution layer: grounded follow-ups, demo/POC & RFP prep — not just call summaries.' };
+    if (/kafka|in.?house|build/i.test(name)) return { theirAngle: 'Build it in-house (e.g. on Kafka).', ourCounter: 'Months of eng time + ongoing maintenance vs. value in days, every claim grounded in the call.' };
+    if (/clari/i.test(name)) return { theirAngle: 'Pipeline / forecasting for RevOps.', ourCounter: 'We act on the SE workflow, not just the dashboard — execution, not intelligence.' };
+    return { theirAngle: 'Alternative under evaluation.', ourCounter: 'SE-native, grounded-by-evidence, fastest path from call to next step.' };
+  };
+  result.battlecards = [...seenCompetitors].map((name) => ({ competitor: name, ...angles(name), evidence: result.competitors.find((c) => c.name === name)?.evidence ?? null }));
+
+  const turnsBy = new Map();
+  for (const u of utterances) {
+    if (!u.speaker) continue;
+    const e = turnsBy.get(u.speaker) || { name: u.speaker, role: u.role || '', turns: 0 };
+    e.turns++;
+    if (!e.role && u.role) e.role = u.role;
+    turnsBy.set(u.speaker, e);
+  }
+  const speakers = [...turnsBy.values()].sort((a, b) => b.turns - a.turns);
+  const totalTurns = speakers.reduce((n, s) => n + s.turns, 0) || 1;
+  const lead = speakers[0];
+  result.analytics = {
+    speakers,
+    note: lead ? `${lead.name}${lead.role ? ` (${lead.role})` : ''} led ${lead.turns}/${totalTurns} turns; ${speakers.length} participants — multithread the rest of the buying committee.` : '',
+  };
+
   return normalizeResult(result);
 }
 
@@ -419,8 +504,12 @@ function sharesKeywords(a, b) {
 
 function findEconomicBuyer(utterances) {
   for (const u of utterances) {
-    const m = /CFO[,]?\s+([A-Z][a-z]+)|([A-Z][a-z]+)[,]?\s+.*CFO/i.exec(u.text);
-    if (m) return m[1] ?? m[2] ?? 'CFO';
+    // Prefer a name right after the CFO mention ("our CFO, Lena").
+    let m = /\bCFO\b[,:]?\s+(?:is\s+|named\s+)?([A-Z][a-z]+)/.exec(u.text);
+    if (m) return m[1];
+    // Or a named budget owner ("Lena ... controls budget").
+    m = /([A-Z][a-z]+)\b[^.]*\bcontrols?\s+(?:the\s+)?budget/.exec(u.text);
+    if (m) return m[1];
     if (/\bCFO\b/.test(u.text)) return 'CFO';
   }
   return '';
