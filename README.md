@@ -101,8 +101,9 @@ pre-fill (60d) → agentic auto-follow-up + SSO/security (90d). Full plan in
 
 **Private (Tailscale-only) for now.** Runs under pm2 bound to the host's Tailscale IP
 (`100.124.131.86:3210`) — not on the public interface. Reachable on the tailnet right now at
-`http://100.124.131.86:3210/`; target hostname is **`https://studio.911fund.io/slipstream/`**
-(Tailscale-bound vhost in [`deploy/studio.911fund.io.conf`](deploy/studio.911fund.io.conf)).
+`http://100.124.131.86:3210/`; target hostname is **`https://studio.apit.fun/slipstream/`**
+— a one-block add to the existing (already Tailscale-bound) studio vhost, no DNS/cert change
+([`deploy/studio.apit.fun.conf`](deploy/studio.apit.fun.conf)).
 Setup + how to go public later: [`deploy/DEPLOY.md`](deploy/DEPLOY.md).
 
 ```bash
