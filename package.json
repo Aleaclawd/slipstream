@@ -1,0 +1,17 @@
+{
+  "name": "slipstream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The technical-sales execution copilot — turn a sales call into a grounded, ready-to-ship action queue.",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  },
+  "keywords": ["sales-engineering", "revenue-execution", "conversation-intelligence", "copilot", "grounded-ai"],
+  "license": "MIT",
+  "optionalDependencies": {
+    "@anthropic-ai/sdk": "^0.40.0"
+  }
+}

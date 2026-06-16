@@ -1,0 +1,16 @@
+Slipstream — sample technical discovery call
+(SE = Sales Engineer / our user. Prospect = Northwind Logistics.)
+
+[00:00] Priya (SE, Acme): Thanks for making time. To set the agenda — I'd love to understand your current setup, where the pain is, and what a successful evaluation looks like for your team.
+[00:41] Dan (VP Engineering, Northwind): Sure. We're a logistics platform, about 400 engineers. The big problem is our shipment-tracking events are scattered across three systems and reconciling them by hand is killing us.
+[01:20] Dan (VP Engineering, Northwind): Honestly the manual reconciliation eats two analysts full time, and we still get it wrong. That's the thing I most need to fix this quarter.
+[02:05] Maria (Security Lead, Northwind): Before we go further — we're SOC 2 Type II and we'd need SSO via Okta and data residency in the EU. No customer data can leave the region.
+[02:48] Priya (SE, Acme): Understood. EU residency and Okta SSO are both supported. I'll get you our SOC 2 report and the data-processing addendum.
+[03:30] Dan (VP Engineering, Northwind): We'd also need it to integrate with Snowflake — that's our warehouse — and push alerts into Slack. If it can't write back to Snowflake it's a non-starter.
+[04:15] Raj (Data Eng, Northwind): How does it handle scale? We do roughly 50 million events a day at peak, and latency matters — we need alerts within a minute.
+[05:02] Priya (SE, Acme): Great question, I'll confirm the exact throughput numbers and get you a reference architecture for 50M events/day.
+[05:40] Dan (VP Engineering, Northwind): We looked at Gong for the call side but this is a different problem. We were also evaluating building it in-house on Kafka.
+[06:25] Maria (Security Lead, Northwind): My concern is honestly whether a startup can meet our security bar. We've been burned before by a vendor that hallucinated compliance answers.
+[07:10] Dan (VP Engineering, Northwind): If you can show us a working reconciliation on our own data in a POC, that would move this forward a lot. Can we get a proof of concept in two weeks?
+[07:55] Priya (SE, Acme): Absolutely. Let me line up a POC plan, confirm the Snowflake write-back, and send the security pack. Who should I include on the next call?
+[08:30] Dan (VP Engineering, Northwind): Add our CFO, Lena — she controls budget and will want the ROI story on those two analysts.

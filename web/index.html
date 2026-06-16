@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Slipstream — win the deal between the calls</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="mark" aria-hidden="true"></span>
+        <span class="name">Slipstream</span>
+        <span class="tag">the technical-sales execution copilot</span>
+      </div>
+      <div class="status" id="status">checking…</div>
+    </header>
+
+    <main>
+      <section class="input-pane">
+        <h1>Win the deal <span class="accent">between</span> the calls.</h1>
+        <p class="sub">
+          Paste a technical sales call. Slipstream returns a grounded action queue —
+          follow-up, demo prep, security/RFP seed rows, and CRM fields — with the
+          transcript evidence behind every claim.
+        </p>
+
+        <textarea
+          id="transcript"
+          spellcheck="false"
+          placeholder="Paste a sales-call transcript or discovery notes…"
+        ></textarea>
+
+        <div class="controls">
+          <button id="analyze" class="primary">Build action queue →</button>
+          <button id="loadSample" class="ghost">Load sample call</button>
+          <label class="toggle" title="Uses Claude if an API key is configured; otherwise the deterministic engine.">
+            <input type="checkbox" id="useLlm" /> <span>Use Claude</span>
+          </label>
+        </div>
+        <div class="meta" id="meta"></div>
+      </section>
+
+      <section class="output-pane" id="output" hidden>
+        <div class="output-head">
+          <div>
+            <div class="deal-name" id="dealName"></div>
+            <div class="deal-oneliner" id="oneLiner"></div>
+          </div>
+          <div class="exports">
+            <button data-export="csv" class="ghost sm">Export CSV</button>
+            <button data-export="json" class="ghost sm">Export JSON</button>
+            <button data-export="webhook" class="ghost sm">CRM webhook ↗</button>
+          </div>
+        </div>
+        <div id="cards" class="cards"></div>
+      </section>
+    </main>
+
+    <div class="modal" id="modal" hidden>
+      <div class="modal-box">
+        <div class="modal-head">
+          <span id="modalTitle">Integration payload</span>
+          <button id="modalClose" class="ghost sm">close</button>
+        </div>
+        <pre id="modalBody"></pre>
+      </div>
+    </div>
+
+    <footer>
+      <span>Grounded by construction — every finding cites the call. No evidence → flagged <em>unverified</em>, never asserted.</span>
+    </footer>
+
+    <script src="app.js" type="module"></script>
+  </body>
+</html>
