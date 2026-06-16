@@ -11,7 +11,7 @@ pm2 status slipstream
 curl -s http://127.0.0.1:3210/api/health    # {"status":"ok","llm":false,...}
 ```
 
-## Go-live at studio.911fund.io  (primary)
+## Go-live at studio.911fund.io/slipstream/  (primary)
 
 `studio.911fund.io` is a **new** subdomain (not yet configured), so two owner steps:
 
@@ -25,14 +25,14 @@ cd ~/slipstream
 sudo cp deploy/studio.911fund.io.conf /etc/nginx/sites-available/studio.911fund.io
 sudo ln -s ../sites-available/studio.911fund.io /etc/nginx/sites-enabled/studio.911fund.io
 sudo nginx -t && sudo systemctl reload nginx
-curl -sk https://studio.911fund.io/api/health
+curl -sk https://studio.911fund.io/slipstream/api/health
 ```
 
-→ Live at **https://studio.911fund.io/** (Slipstream at the root).
+→ Live at **https://studio.911fund.io/slipstream/** (the bare domain redirects there).
 
-Want it under a path instead (`studio.911fund.io/slipstream/`)? Change the vhost
-`location /` to `location /slipstream/` with `proxy_pass http://127.0.0.1:3210/;` (trailing
-slash) — the app already handles the prefix (verified via a simulated proxy).
+The app uses relative paths, so it works correctly under the `/slipstream/` prefix — verified
+by simulating the prefix-stripping proxy (`/slipstream/api/health` → 200 JSON,
+`/slipstream/` → 200 HTML, `/slipstream/styles.css` → 200 CSS).
 
 > **Standalone — does not touch the studio.** Slipstream gets its own subdomain, its own
 > nginx vhost, and its own pm2 process (`:3210`). It is **not** mounted on, and does not
