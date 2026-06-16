@@ -54,7 +54,9 @@ function readBody(req, limit = 2_000_000) {
 }
 
 function csvCell(v) {
-  const s = String(v ?? '');
+  let s = String(v ?? '');
+  // Neutralize spreadsheet formula injection (a cell starting with = + - @ tab/CR can execute).
+  if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
 
