@@ -1,0 +1,16 @@
+Slipstream — second sample technical discovery call
+(SE = Solutions Engineer / our user. Prospect = Cendora.)
+
+[00:00] Sam (Solutions Engineer, Slipstream): Thanks for the time today. I'd like to understand how revenue ops runs for you today, where it hurts, and what a good evaluation looks like for your team.
+[00:38] Rosa (Director of Revenue Operations, Cendora): We're a SaaS company, around 250 people. The big problem is our deal data lives across three tools and we reconcile it by hand every week — it's manual and it eats us alive.
+[01:15] Rosa (Director of Revenue Operations, Cendora): Honestly the weekly CSV export and cleanup takes three ops people full time, and we still get it wrong. That's the thing I most need to fix this quarter.
+[02:02] Tom (Security Lead, Cendora): Before we go deeper — we're ISO 27001 and we'd need SAML SSO and no customer PII leaving the US. That's a hard requirement for us.
+[02:45] Sam (Solutions Engineer, Slipstream): Understood. US data residency and SAML are supported. I'll get you our security overview and the data-processing addendum.
+[03:28] Rosa (Director of Revenue Operations, Cendora): We'd also need it to integrate with HubSpot and write back into BigQuery, and push notifications into Microsoft Teams. If it can't write back to BigQuery it's a non-starter.
+[04:12] Owen (Analytics Lead, Cendora): How does it handle scale? We push about 10 million records an hour at month-end close, and freshness matters — we need updates within a few minutes.
+[05:00] Sam (Solutions Engineer, Slipstream): Good question, I'll confirm the exact throughput and get you a reference architecture for 10 million records an hour.
+[05:38] Rosa (Director of Revenue Operations, Cendora): We looked at Clari for forecasting but this is a different problem. We were also weighing building it in-house.
+[06:20] Tom (Security Lead, Cendora): My concern is honestly whether a younger vendor can clear our security review. We've been burned before by a tool that overstated its compliance.
+[07:05] Rosa (Director of Revenue Operations, Cendora): If you can show us a working reconciliation on our own data in a pilot, that would move this forward a lot. Can we get a proof of concept in three weeks?
+[07:50] Sam (Solutions Engineer, Slipstream): Absolutely. Let me line up a POC plan, confirm the BigQuery write-back, and send the security pack. Who should I include on the next call?
+[08:28] Rosa (Director of Revenue Operations, Cendora): Add our CFO, Marcus — he owns the budget and will want the ROI story on those three ops people.

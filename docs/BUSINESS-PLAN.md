@@ -54,10 +54,26 @@ Paste a transcript or discovery notes → Slipstream returns a **grounded action
 7. **CRM-ready fields + one integration stub** — JSON/CSV + webhook export with a
    HubSpot/Salesforce field map.
 
-### The moat: grounding by construction
-Every structured output carries a `source` pointing at the transcript span (and, later, the
-doc) it was derived from. No evidence → it's flagged "unverified," never asserted. This is the
-direct answer to the #1 SE objection and the thing generic summarizers won't do.
+### The moat: grounding as a discipline
+Grounding is a **contract enforced in both engines**, not one clever model: every structured
+output either carries a `source` pointing at the exact transcript span it came from, or is
+flagged **"unverified"** and never asserted. The schema makes "confident and wrong"
+unrepresentable — an output with no evidence can only be a draft, never a claim.
+
+Two engines honor the same contract at different depths:
+- **Deterministic engine** (default, zero-dependency): a regex/heuristic baseline. It runs
+  instantly and offline, grounds every finding it emits to a transcript line, and — by design —
+  emits a neutral *draft* (never a fabricated capability) when it can't verify. It is the
+  always-available floor, with lower recall than the LLM path, not the ceiling. (A regression
+  test, `test/generalization.test.js`, runs it on a second, unrelated transcript and asserts it
+  neither leaks the sample's specifics nor invents a capability.)
+- **LLM path** (optional, Claude): higher recall and nuance, the *same* evidence-or-unverified
+  contract, validated structurally on the way out (`normalizeResult`).
+
+The defensibility isn't "our regex is magic" — it's that grounding is the product's spine, the
+direct answer to the #1 SE objection (vendors that hallucinate compliance answers), and the
+thing generic summarizers won't do. The asset that compounds is the **grounding library**
+(product/security docs the answers cite), on the roadmap below.
 
 ### Roadmap
 | Horizon | Ship |

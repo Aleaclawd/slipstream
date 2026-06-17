@@ -26,7 +26,10 @@ the security questionnaire returned in hours not weeks. The 2026 market has move
 from *revenue intelligence* (dashboards) to *revenue **execution*** (shipped
 work), incumbents (Gong/Clari) are priced for AE managers, and the #1 objection
 to AI in this workflow is hallucination. Slipstream is built for that gap:
-SE-native, execution-first, and grounded by construction.
+SE-native, execution-first, and **grounded by construction** — every finding either cites the
+transcript line it came from or is flagged "unverified" and never asserted. That contract holds
+in both engines: the zero-dependency deterministic baseline (instant, offline, lower recall)
+and the optional Claude path (higher recall, same grounding rule).
 
 ## Quickstart
 

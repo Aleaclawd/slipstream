@@ -80,9 +80,12 @@ function mkEvidence(u) {
 const PAIN_SIGNALS = /killing us|problem|manual|by hand|eats|full time|get it wrong|non-starter|burned|struggle/i;
 const HIGH_SEVERITY = /most need|killing|non-starter|this quarter|burned/i;
 
-const INTEGRATION_RE = /integrate|Snowflake|Slack|API|webhook|write back|push/i;
-const SECURITY_RE = /SOC 2|SSO|Okta|residency|compliance|encryption|no customer data/i;
-const SCALE_RE = /events|per day|latency|throughput|scale|within a minute|peak/i;
+// "push" must be an integration push (alerts/notifications/to a system), not "we push 10M rows";
+// API/SSO are word-bounded so they don't fire inside "rapidly"/"lesson".
+const INTEGRATION_RE = /integrate|Snowflake|Slack|\bAPI\b|webhook|write[ -]?back|push (?:alert|notif|to|into)/i;
+const SECURITY_RE = /SOC 2|\bSSO\b|Okta|residency|compliance|encryption|no customer data/i;
+// Bare "events" matched any mention of events (incl. pains); require a real rate/volume/latency.
+const SCALE_RE = /per day|per hour|latency|throughput|\bscale\b|within (?:a|one|\d|a few) minutes?|\bpeak\b|\b(?:million|thousand|billion)\s+(?:events|records|rows|requests|messages|transactions)/i;
 const COMMERCIAL_RE = /budget|ROI|CFO|pricing|cost/i;
 
 const OBJECTION_RE = /concern|worried|whether a startup|burned|non-starter|risk/i;
@@ -96,6 +99,7 @@ const TIMEFRAME_RE = /\btwo weeks?\b|\bone week?\b|\bnext week\b|\bthis week\b|\
 
 const COMPETITOR_NAMES = [
   { pattern: /\bGong\b/i, name: 'Gong' },
+  { pattern: /\bClari\b/i, name: 'Clari' },
   { pattern: /\bKafka\b/i, name: 'Kafka' },
   { pattern: /\bin[- ]house\b/i, name: 'in-house' },
   { pattern: /\bbuild it\b/i, name: 'build-it-in-house' },
@@ -108,11 +112,19 @@ export function analyzeTranscript(text) {
   const result = emptyResult();
 
   // ── Summary ──
-  // Derive account name from the first org we see
-  const firstOrg = utterances.find((u) => u.org)?.org ?? 'Unknown';
+  // The seller's own rep (SE): detected by role, else the first speaker. Used to attribute
+  // commitments, pick the prospect org, and sign the follow-up — never hardcoded to a sample name.
+  const seByRole =
+    utterances.find((u) => /\b(SE|sales eng|solutions?\s*(consultant|engineer|architect)|account exec|\bAE\b)\b/i.test(u.role || ''))?.speaker || '';
+  const seSpeaker = seByRole || utterances.find((u) => u.speaker)?.speaker || '';
+  // Account = the PROSPECT org: first org from a speaker who isn't the SE (the SE's own org
+  // would otherwise win just by speaking first). Fall back to any org, then "Unknown".
+  const firstOrg =
+    utterances.find((u) => u.org && u.speaker && u.speaker !== seSpeaker)?.org ||
+    utterances.find((u) => u.org)?.org ||
+    'Unknown';
   result.summary.dealName = `${firstOrg} — Slipstream Evaluation`;
-  result.summary.oneLiner =
-    'Prospect needs to unify scattered shipment-tracking events with enterprise-grade security and scale.';
+  // oneLiner is derived from the lead pain after extraction (below).
 
   // ── Stakeholders ──
   const seenSpeakers = new Map(); // name -> utterance of first appearance
@@ -137,49 +149,40 @@ export function analyzeTranscript(text) {
     }
   }
 
-  // ── Requirements ──
+  // oneLiner: derived from the lead (high-severity) pain — never hardcoded to a sample.
+  const leadPain = result.pains.find((p) => p.severity === 'high') || result.pains[0];
+  result.summary.oneLiner = leadPain
+    ? `${firstOrg}: ${trimText(leadPain.text, 100)}`
+    : `${firstOrg} — technical evaluation in progress.`;
+
+  // ── Requirements ── (the prospect's needs — not the SE's confirmations)
   const requirementSeen = new Set();
+  // A concrete-need signal: lets a line that's also an objection ("…it's a non-starter")
+  // still count as a requirement, while a pure worry does not.
+  const NEED_RE = /\bneed\b|\brequire|\bmust\b|non-starter|have to|integrate|write[ -]?back|\bpush\b|\bSSO\b|residency|certif|\bsupport/i;
   for (const u of utterances) {
+    if (!u.text) continue;
+    // Requirements come from the prospect; skip the SE's own lines (their confirmations are
+    // handled separately, as RFP verification). Only skip when we identified the SE by role.
+    if (seByRole && u.speaker === seByRole) continue;
+    // A line that is purely an objection/worry is captured as an objection, not a requirement —
+    // unless it also states a concrete need.
+    const objectionOnly = OBJECTION_RE.test(u.text) && !NEED_RE.test(u.text);
     const key = (cat) => `${cat}:${u.lineNo}`;
-    if (INTEGRATION_RE.test(u.text) && !requirementSeen.has(key('integration'))) {
-      requirementSeen.add(key('integration'));
-      result.requirements.push({
-        category: 'integration',
-        text: deriveRequirementText('integration', u.text),
-        evidence: mkEvidence(u),
-      });
-    }
-    if (SECURITY_RE.test(u.text) && !requirementSeen.has(key('security'))) {
-      requirementSeen.add(key('security'));
-      result.requirements.push({
-        category: 'security',
-        text: deriveRequirementText('security', u.text),
-        evidence: mkEvidence(u),
-      });
-    }
-    if (SCALE_RE.test(u.text) && !requirementSeen.has(key('scale'))) {
-      requirementSeen.add(key('scale'));
-      result.requirements.push({
-        category: 'scale',
-        text: deriveRequirementText('scale', u.text),
-        evidence: mkEvidence(u),
-      });
-    }
-    if (COMMERCIAL_RE.test(u.text) && !requirementSeen.has(key('commercial'))) {
-      requirementSeen.add(key('commercial'));
-      result.requirements.push({
-        category: 'commercial',
-        text: deriveRequirementText('commercial', u.text),
-        evidence: mkEvidence(u),
-      });
-    }
-    if (u.text.trimEnd().endsWith('?') && !requirementSeen.has(key('open_question'))) {
+    let classified = false;
+    const add = (category) => {
+      requirementSeen.add(key(category));
+      classified = true;
+      result.requirements.push({ category, text: deriveRequirementText(category, u.text), evidence: mkEvidence(u) });
+    };
+    if (!objectionOnly && INTEGRATION_RE.test(u.text) && !requirementSeen.has(key('integration'))) add('integration');
+    if (!objectionOnly && SECURITY_RE.test(u.text) && !requirementSeen.has(key('security'))) add('security');
+    if (!objectionOnly && SCALE_RE.test(u.text) && !requirementSeen.has(key('scale'))) add('scale');
+    if (!objectionOnly && COMMERCIAL_RE.test(u.text) && !requirementSeen.has(key('commercial'))) add('commercial');
+    // Open questions: only if the line wasn't already captured as a concrete requirement.
+    if (!classified && u.text.trimEnd().endsWith('?') && !requirementSeen.has(key('open_question'))) {
       requirementSeen.add(key('open_question'));
-      result.requirements.push({
-        category: 'open_question',
-        text: u.text.slice(0, 120),
-        evidence: mkEvidence(u),
-      });
+      result.requirements.push({ category: 'open_question', text: trimText(u.text, 120), evidence: mkEvidence(u) });
     }
   }
 
@@ -206,7 +209,7 @@ export function analyzeTranscript(text) {
     if (ACTION_RE.test(u.text)) {
       // A pain statement that merely contains "need to" is not an action.
       if (PAIN_SIGNALS.test(u.text) && !COMMIT_RE.test(u.text)) continue;
-      const isSELine = u.speaker && /^(Priya|SE)$/i.test(u.speaker);
+      const isSELine = Boolean(seSpeaker) && u.speaker === seSpeaker;
       const startsWithSE = SE_ACTION_RE.test(u.text);
       const owner = isSELine || startsWithSE ? 'SE' : 'Prospect';
       const priority = P1_RE.test(u.text) ? 'P1' : 'P2';
@@ -229,31 +232,24 @@ export function analyzeTranscript(text) {
   const pocAction = result.actions.find((a) => /POC|proof of concept/i.test(a.title + (a.evidence?.quote ?? '')));
 
   const demoPrepItems = [];
-  for (const r of secReqs) {
+  const PREP_LABEL = {
+    security: 'Prepare security & compliance evidence',
+    integration: 'Build a live integration demo',
+    scale: 'Prepare a scale / architecture answer',
+  };
+  // Derive each prep item from the actual requirement the prospect raised — no fixed
+  // SOC 2 / Snowflake / 50M assumptions (those only applied to the first sample).
+  for (const r of [...secReqs, ...intReqs, ...scaleReqs]) {
     demoPrepItems.push({
-      item: `Prepare SOC 2 report and data-processing addendum`,
-      rationale: `Prospect requires SOC 2 Type II certification and EU data residency documentation`,
-      evidence: r.evidence,
-    });
-  }
-  for (const r of intReqs) {
-    demoPrepItems.push({
-      item: `Set up live Snowflake write-back and Slack alert demo`,
-      rationale: `Snowflake integration and Slack push alerts are stated hard requirements`,
-      evidence: r.evidence,
-    });
-  }
-  for (const r of scaleReqs) {
-    demoPrepItems.push({
-      item: `Provide reference architecture for 50M events/day with sub-minute latency`,
-      rationale: `Prospect processes ~50M events/day at peak and needs alerts within a minute`,
+      item: `${PREP_LABEL[r.category] || 'Prepare a response'} — ${trimText(r.text, 90)}`,
+      rationale: `Raised as a ${r.category} requirement on the call.`,
       evidence: r.evidence,
     });
   }
   if (pocAction) {
     demoPrepItems.push({
-      item: `Scope and schedule two-week POC using prospect's own data`,
-      rationale: `Dan explicitly asked for a working reconciliation POC on their own data`,
+      item: `Scope and schedule the requested POC / next step`,
+      rationale: `A working proof-of-concept on their own data was explicitly requested.`,
       evidence: pocAction.evidence,
     });
   }
@@ -264,18 +260,19 @@ export function analyzeTranscript(text) {
   // SE utterances that confirmed something
   const SE_CONFIRM_RE = /supported|confirm|I'll get you/i;
   const seConfirmations = utterances.filter(
-    (u) => u.speaker && /^Priya$/i.test(u.speaker) && SE_CONFIRM_RE.test(u.text)
+    (u) => u.speaker && u.speaker === seSpeaker && SE_CONFIRM_RE.test(u.text)
   );
 
   const allRfpSourceReqs = [...secReqs, ...intReqs, ...scaleReqs];
   for (const r of allRfpSourceReqs) {
-    // Find a matching SE confirmation
+    // Match against the requirement's spoken text — NOT the raw quote, whose speaker tag
+    // ("Security Lead, …") would spuriously match an SE line that mentions "security".
     const confirmed = seConfirmations.find((seU) =>
-      sharesKeywords(seU.text, r.evidence?.quote ?? '')
+      sharesKeywords(seU.text, r.text)
     );
     result.rfpRows.push({
       question: rfpQuestion(r),
-      suggestedAnswer: rfpAnswer(r),
+      suggestedAnswer: confirmed ? `Confirmed on the call: "${trimText(confirmed.text, 100)}"` : rfpAnswer(r),
       status: confirmed ? 'verified' : 'unverified',
       evidence: confirmed ? mkEvidence(confirmed) : r.evidence,
     });
@@ -297,44 +294,53 @@ export function analyzeTranscript(text) {
     DealStage: 'Technical Evaluation',
   };
 
-  // ── followupEmail ──
+  // ── followupEmail ── assembled from what was actually extracted; every claim cites a
+  // transcript line; signed with the detected SE. Nothing here is hardcoded to a sample,
+  // and it never asserts a fact that isn't in the call.
   const highPains = result.pains.filter((p) => p.severity === 'high');
   const topPain = highPains[0] ?? result.pains[0];
   const seActions = result.actions.filter((a) => a.owner === 'SE');
   const account = firstOrg;
   const champName = champion?.name ?? 'there';
 
-  // Build citation list
   const citations = [];
   const cite = (ev) => {
     if (!ev) return '';
     citations.push(ev);
-    return `[${citations.length}]`;
+    return ` [${citations.length}]`;
   };
 
-  const painCite = cite(topPain?.evidence);
-  const secCite = cite(secReqs[0]?.evidence);
-  const seActionCite = seActions[0] ? cite(seActions[0]?.evidence) : '';
-
-  const body =
-    `Hi ${champName},\n\n` +
-    `Thank you for the discovery call today. Based on our conversation, the most pressing issue is the manual reconciliation of shipment-tracking events ${painCite} — consuming two analysts full-time and still producing errors. We understand that this is your top priority for this quarter.\n\n` +
-    `On the security and compliance front ${secCite}, we confirmed that EU data residency and Okta SSO are supported, and I'll send over our SOC 2 Type II report and data-processing addendum ${seActionCite} shortly.\n\n` +
-    `I'll follow up with a POC plan, the Snowflake write-back confirmation, and the security pack, and will ensure Lena is included on the next call to discuss the ROI story.\n\n` +
-    `Looking forward to progressing this with your team.\n\n` +
-    `Best,\nPriya\n\n` +
-    citations.map((ev, idx) => `[${idx + 1}] line ${ev.line}: ${ev.quote.slice(0, 100)}`).join('\n');
+  const para = [`Hi ${champName},`, '', 'Thanks for the time today — a quick recap and the next steps.'];
+  if (topPain) {
+    para.push('', `The priority you raised: ${trimText(topPain.text, 140)}${cite(topPain.evidence)}.`);
+  }
+  const namedReqs = result.requirements.filter((r) => r.category !== 'open_question').slice(0, 4);
+  if (namedReqs.length) {
+    para.push('', 'Requirements we captured to address:');
+    for (const r of namedReqs) para.push(`  • ${trimText(r.text, 100)}${cite(r.evidence)}`);
+  }
+  if (seActions.length) {
+    para.push('', 'What I will follow up on:');
+    for (const a of seActions.slice(0, 5)) para.push(`  • ${trimText(a.title, 90)}${a.due ? ` (${a.due})` : ''}${cite(a.evidence)}`);
+  }
+  if (economicBuyer) {
+    para.push('', `It would also be good to bring ${economicBuyer} (budget owner) into the next conversation.`);
+  }
+  para.push('', 'If I have mis-stated anything above, just flag it and I will correct it.', '', 'Best,', seSpeaker || '[your name]');
+  if (citations.length) {
+    para.push('', '—', ...citations.map((ev, idx) => `[${idx + 1}] line ${ev.line}: ${trimText(ev.quote, 100)}`));
+  }
 
   result.followupEmail = {
-    subject: `${account} × Slipstream — POC Plan + Security Pack`,
-    body,
+    subject: `${account} × Slipstream — next steps`,
+    body: para.join('\n'),
   };
 
   // ── MVP intelligence: deal health (MEDDPICC), risks, next-best-actions, battlecards, analytics ──
   const findU = (re) => utterances.find((u) => re.test(u.text));
   const evOf = (u) => (u ? mkEvidence(u) : null);
   const metricU = findU(/two analysts|50 million|\b\d+\s*(million|analysts|engineers|events)|\bROI\b/i);
-  const ebU = findU(/\bCFO\b|budget|economic buyer|Lena/i);
+  const ebU = findU(/\bCFO\b|budget|economic buyer/i);
   const pocU = findU(/\bPOC\b|proof of concept|two weeks|evaluation|that would move/i);
   const paperU = findU(/SOC 2|data residency|compliance|procurement|legal|data-processing|security bar/i);
   const champU = findU(/most need|fix this quarter|move this forward|show us a working/i);
@@ -362,11 +368,11 @@ export function analyzeTranscript(text) {
     competition: result.competitors[0]?.evidence ?? null,
   };
   const dimNotes = {
-    metrics: metricU ? 'Quantified impact captured (analysts, event volume).' : 'No quantified business metric yet.',
+    metrics: metricU ? 'Quantified business impact captured.' : 'No quantified business metric yet.',
     economic_buyer: economicBuyer || ebU ? `Economic buyer in play${economicBuyer ? ': ' + economicBuyer : ''}.` : 'No economic buyer identified.',
     decision_criteria: reqCount ? `${reqCount} technical requirements surfaced.` : 'Decision criteria still unclear.',
     decision_process: pocU ? 'POC / evaluation path discussed.' : 'Decision process not yet mapped.',
-    paper_process: paperU ? 'Security/compliance steps named (SOC 2, residency).' : 'Procurement / paper process unknown.',
+    paper_process: paperU ? 'Security / compliance steps named.' : 'Procurement / paper process unknown.',
     identified_pain: highPainCount ? `${highPainCount} high-severity pain(s) identified.` : 'Pain not strongly established.',
     champion: champU ? 'An engaged internal advocate is pushing the deal.' : 'No clear champion yet.',
     competition: seenCompetitors.size ? `Competition known: ${[...seenCompetitors].join(', ')}.` : 'Competitive landscape unknown.',
@@ -385,15 +391,15 @@ export function analyzeTranscript(text) {
   const addNba = (action, rationale, priority, evidence) => nba.push({ action, rationale, priority, evidence: evidence ?? null });
   if (!(economicBuyer || ebU)) addNba('Multithread to the economic buyer (CFO / budget owner)', 'No economic buyer is engaged yet — enterprise deals stall in procurement without one.', 'P1', null);
   else if (ebU) addNba(`Get ${economicBuyer || 'the economic buyer'} engaged on the next call`, 'Budget owner is named but not yet bought into the technical value.', 'P2', evOf(ebU));
-  if (paperU || result.requirements.some((r) => r.category === 'security')) addNba('Send the security pack (SOC 2 + DPA) and pre-fill the security questionnaire', 'A security/compliance bar was raised — de-risk it early to avoid late-stage paper-process death.', 'P1', evOf(paperU));
-  if (result.requirements.some((r) => /Snowflake|write.?back/i.test(r.text + (r.evidence?.quote || '')))) addNba('Confirm Snowflake write-back feasibility before the POC', 'Write-back was flagged a non-starter — validate it before investing in the POC.', 'P1', null);
+  if (paperU || result.requirements.some((r) => r.category === 'security')) addNba('Send the security & compliance pack (overview + DPA) and pre-fill the security questionnaire', 'A security/compliance bar was raised — de-risk it early to avoid late-stage paper-process death.', 'P1', evOf(paperU));
+  if (result.requirements.some((r) => /write.?back/i.test(r.text + (r.evidence?.quote || '')))) addNba('Confirm data write-back feasibility before the POC', 'Write-back was flagged a non-starter — validate it before investing in the POC.', 'P1', null);
   if (pocU) addNba('Scope a 2-week POC on their own data', 'A working POC on their data was explicitly requested and would move the deal forward.', 'P1', evOf(pocU));
   for (const name of seenCompetitors) addNba(`Prepare a battlecard vs ${name}`, `${name} is in the evaluation — arm the champion with crisp differentiation.`, 'P2', result.competitors.find((c) => c.name === name)?.evidence);
   result.nextBestActions = nba;
 
   const angles = (name) => {
     if (/gong/i.test(name)) return { theirAngle: 'Conversation intelligence — records & analyzes calls for AE managers.', ourCounter: 'Slipstream owns the SE execution layer: grounded follow-ups, demo/POC & RFP prep — not just call summaries.' };
-    if (/kafka|in.?house|build/i.test(name)) return { theirAngle: 'Build it in-house (e.g. on Kafka).', ourCounter: 'Months of eng time + ongoing maintenance vs. value in days, every claim grounded in the call.' };
+    if (/kafka|in.?house|build/i.test(name)) return { theirAngle: 'Build it in-house.', ourCounter: 'Months of eng time + ongoing maintenance vs. value in days, every claim grounded in the call.' };
     if (/clari/i.test(name)) return { theirAngle: 'Pipeline / forecasting for RevOps.', ourCounter: 'We act on the SE workflow, not just the dashboard — execution, not intelligence.' };
     return { theirAngle: 'Alternative under evaluation.', ourCounter: 'SE-native, grounded-by-evidence, fastest path from call to next step.' };
   };
@@ -420,29 +426,19 @@ export function analyzeTranscript(text) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** Collapse whitespace and clip to n chars — used everywhere we echo transcript text. */
+function trimText(s, n = 120) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim().slice(0, n);
+}
+
 function deriveRequirementText(category, text) {
-  const t = text.slice(0, 120);
-  switch (category) {
-    case 'integration': {
-      if (/Snowflake/i.test(t)) return 'Snowflake integration with write-back support';
-      if (/Slack/i.test(t)) return 'Slack alert push integration';
-      return 'Third-party integration requirement';
-    }
-    case 'security': {
-      if (/SOC 2/i.test(t)) return 'SOC 2 Type II certification + EU data residency';
-      if (/Okta/i.test(t)) return 'SSO via Okta required';
-      return 'Enterprise security and compliance requirement';
-    }
-    case 'scale': {
-      if (/50 million|50M/i.test(t)) return '50M events/day with sub-minute alert latency';
-      if (/within a minute/i.test(t)) return 'Alert latency within one minute';
-      return 'High-throughput scale requirement';
-    }
-    case 'commercial':
-      return 'Budget / ROI approval required (CFO-level)';
-    default:
-      return t;
-  }
+  // Echo the prospect's own words — the most substantive sentence, so a question framing like
+  // "How does it handle scale? We push 10M records/hour…" yields the real detail that follows.
+  // The category carries the classification; we never fabricate specifics (SOC 2, Snowflake,
+  // 50M…) that weren't actually said — that demo-overfit was the core finding of the CEO review.
+  const sentences = String(text).split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean);
+  const best = sentences.sort((a, b) => b.length - a.length)[0] || text;
+  return trimText(best, 120);
 }
 
 function deriveActionTitle(text) {
@@ -466,29 +462,27 @@ function deriveActionTitle(text) {
 }
 
 function rfpQuestion(req) {
+  // Echo the prospect's actual requirement as a confirm-question — never inject specifics
+  // (SOC 2, Snowflake, 50M…) that a given call may not contain.
+  const t = trimText(req.text, 110);
   switch (req.category) {
     case 'security':
-      return 'Does the platform support SOC 2 Type II, Okta SSO, and EU data residency?';
+      return `Security & compliance — can you meet: ${t}?`;
     case 'integration':
-      return 'Does the platform integrate with Snowflake (write-back) and Slack?';
+      return `Integration — do you support: ${t}?`;
     case 'scale':
-      return 'Can the platform handle 50M events/day with sub-minute alert latency?';
+      return `Scale & performance — can you handle: ${t}?`;
     default:
-      return `${req.category} requirement — please confirm`;
+      return `Please confirm: ${t}`;
   }
 }
 
-function rfpAnswer(req) {
-  switch (req.category) {
-    case 'security':
-      return 'Yes — SOC 2 Type II certified, Okta SSO supported, EU-region data residency available.';
-    case 'integration':
-      return 'Yes — native Snowflake connector with write-back; Slack webhook integration supported.';
-    case 'scale':
-      return 'Yes — reference architecture supports >50M events/day; P99 alert latency < 60 s.';
-    default:
-      return 'To be confirmed.';
-  }
+function rfpAnswer(_req) {
+  // The deterministic engine has NO knowledge of Slipstream's real capabilities, so it must
+  // never assert one. Emit a neutral draft for the SE to confirm or mark as a gap. (A
+  // "verified" answer is produced only when the transcript itself contains a confirmation —
+  // see the rfpRows loop.)
+  return '[Draft — confirm with product]: state how Slipstream meets this requirement, or flag it as a gap.';
 }
 
 /** Return true if two strings share at least one significant keyword */
