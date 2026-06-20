@@ -193,6 +193,17 @@ test('short-acronym confirmations DO verify (Okta SSO, SOC 2, SAML, REST API, we
   assert.equal(intg('we need webhooks to integrate', 'Webhooks are supported.'), 'verified');
 });
 
+test('capability-verb confirmations DO verify ("we integrate", "it writes back")', () => {
+  const intg = (req, se) =>
+    analyzeTranscript(`Dan (VP Engineering, Northwind): ${req}\nPriya (Sales Engineer, Acme): ${se}`)
+      .rfpRows.find((r) => /integration/i.test(r.question)).status;
+  // affirmative present-tense capability stated with an ACTION VERB, not "supported"
+  assert.equal(intg('we need to integrate with Snowflake', 'We integrate with Snowflake natively.'), 'verified');
+  assert.equal(intg('we need Snowflake write-back', 'It writes back to Snowflake.'), 'verified');
+  // but the conditional form of the same verb must NOT verify
+  assert.equal(intg('we need to integrate with Snowflake', 'We integrate with Snowflake once the contract is signed.'), 'unverified');
+});
+
 test('S12: a partial-token-overlap quote is NOT accepted as grounded (no fuzzy hole)', () => {
   const out = verifyEvidenceGrounding(
     { rfpRows: [{ question: 'q', suggestedAnswer: 'a', status: 'verified', evidence: { quote: 'EU residency Okta totally fabricated nonsense', line: 1 } }] },

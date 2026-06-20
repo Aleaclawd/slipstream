@@ -299,7 +299,14 @@ export function analyzeTranscript(text) {
   // I'll get you the report." yields the confirmation from the first clause without the promise
   // in the second laundering anything (S1/S5). Each confirmation is tagged with the requirement
   // category it actually speaks to, so an SSO confirmation can't verify a scale row (S22).
-  const AFFIRM_RE = /\b(?:is|are|both|fully|natively|already)\s+supported\b|\bwe\s+(?:support|have|are|do|can|offer|provide|meet)\b|\b(?:is|are)\s+(?:supported|available|compliant|certified|in place)\b|\bsupported\b|\bcompliant\b|\bcertified\b/i;
+  // Affirmative present-tense capability. Recognizes the predicate adjectives AND the common
+  // category-defining capability VERBS ("we integrate with Snowflake", "it writes back") — the
+  // prior version keyed only on supported/compliant/certified and silently failed every
+  // action-verb confirmation (verify-skeptic refutation). Future/conditional/negated forms are
+  // still excluded downstream by FUTURE_PROMISE_RE / NEGATION_RE / RETRACT_RE / contested.
+  // NOTE: this is a finite predicate set — novel affirmative phrasings are the documented
+  // deterministic ceiling, deferred to the LLM-judge pass.
+  const AFFIRM_RE = /\bsupported\b|\bcompliant\b|\bcertified\b|\bnatively\b|\b(?:is|are|both|fully|already)\s+(?:supported|available|compliant|certified|in\s+place)\b|\b(?:we|it|that|this)\s+(?:support|integrate|connect|sync|handle|scale|push|write|provide|offer|meet|run|cover|enable|deliver|do|have|can|already)s?\b/i;
   const FUTURE_PROMISE_RE = /\b(?:i'?ll|we'?ll|i\s+will|we\s+will|let\s+me|going\s+to)\b/i;
   const NEGATION_RE = /\b(?:not|cannot|can'?t|don'?t|won'?t|isn'?t|aren'?t|doesn'?t|never|unable)\b/i;
   // A capability the SE marks as NOT presently available: explicit unavailability, a
