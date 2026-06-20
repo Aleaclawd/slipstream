@@ -92,7 +92,7 @@ const HIGH_SEVERITY = /most need|killing|non-starter|this quarter|burned/i;
 const INTEGRATION_RE = /integrate|Snowflake|Slack|\bAPI\b|webhook|write[ -]?back|push (?:alert|notif|to|into)/i;
 const SECURITY_RE = /SOC 2|\bSSO\b|Okta|residency|compliance|encryption|no customer data/i;
 // Bare "events" matched any mention of events (incl. pains); require a real rate/volume/latency.
-const SCALE_RE = /per day|per hour|latency|throughput|\bscale\b|within (?:a|one|\d|a few) minutes?|\bpeak\b|\b(?:million|thousand|billion)\s+(?:events|records|rows|requests|messages|transactions)/i;
+const SCALE_RE = /per day|per hour|per second|per minute|latency|throughput|\bscale\b|within (?:a|one|\d|a few) minutes?|\bpeak\b|\bspikes?\b|\b\d[\d,.]*\s*[kmb]?\s*(?:events|records|rows|requests|messages|transactions|qps|rps|tps|users|calls)\b|\b\d[\d,.]*\s*[kmb]\b\s*(?:\/|per\b)|\b(?:million|thousand|billion)\s+(?:events|records|rows|requests|messages|transactions)/i;
 const COMMERCIAL_RE = /budget|ROI|CFO|pricing|cost/i;
 
 const OBJECTION_RE = /concern|worried|whether a startup|burned|non-starter|risk/i;
@@ -102,7 +102,11 @@ const SE_ACTION_RE = /^(I'll|let me)/i;
 // A real commitment/ask, not just a pain that happens to contain "need to".
 const COMMIT_RE = /I'll|let me|can we get|we'd need|send|confirm|line up|please|let's|\badd\b/i;
 const P1_RE = /POC|non-starter|security pack|this quarter/i;
-const TIMEFRAME_RE = /\btwo weeks?\b|\bone week?\b|\bnext week\b|\bthis week\b|\bone month\b/i;
+// Relative + absolute due-dates. The prior version matched only a 5-phrase whitelist, so most
+// real commitments entered the queue with no date (S3/S8/S14): 'three weeks', 'in a month',
+// 'within 30 days', 'by Friday', 'next Tuesday', 'end of Q3' all yielded no due. We capture the
+// phrase (the parser has no call-date to resolve against).
+const TIMEFRAME_RE = /\b(?:in|within|by|next|this|over|after)\s+(?:a\s+|an\s+|one\s+|two\s+|three\s+|four\s+|five\s+|six\s+|few\s+|couple\s+(?:of\s+)?|\d+\s+)?(?:day|week|month|quarter|business\s+day)s?\b|\b(?:a\s+|one\s+|two\s+|three\s+|four\s+|few\s+|\d+\s+)(?:day|week|month|quarter)s?\b|\bby\s+(?:end\s+of\s+)?(?:Q[1-4]|EO[DW]|monday|tuesday|wednesday|thursday|friday|saturday|sunday|jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b|\bnext\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b|\bend\s+of\s+(?:Q[1-4]|(?:the\s+)?(?:week|month|quarter|day))\b|\bby\s+\d{1,2}\/\d{1,2}(?:\/\d{2,4})?\b/i;
 
 const COMPETITOR_NAMES = [
   { pattern: /\bGong\b/i, name: 'Gong' },
@@ -251,13 +255,12 @@ export function analyzeTranscript(text) {
       const priority = P1_RE.test(u.text) ? 'P1' : 'P2';
       const tm = TIMEFRAME_RE.exec(u.text);
       const due = tm ? tm[0] : '';
-      result.actions.push({
-        title: deriveActionTitle(u.text),
-        owner,
-        due,
-        priority,
-        evidence: mkEvidence(u),
-      });
+      // Split a multi-deliverable utterance into distinct actions so the queue captures all of
+      // them, not just the first clause (S4/S20). e.g. "Let me line up a POC, confirm the
+      // write-back, and send the security pack" -> 3 actions.
+      for (const title of deriveActionTitles(u.text)) {
+        result.actions.push({ title, owner, due, priority, evidence: mkEvidence(u) });
+      }
     }
   }
 
@@ -522,6 +525,30 @@ function deriveRequirementText(category, text) {
   const sentences = String(text).split(/(?<=[.?!])\s+/).map((s) => s.trim()).filter(Boolean);
   const best = sentences.sort((a, b) => b.length - a.length)[0] || text;
   return trimText(best, 120);
+}
+
+// Split an SE commitment utterance into its DISTINCT deliverables so a multi-commitment line
+// becomes multiple queue items (S4/S20). Only the comma-list of a leading-commitment sentence
+// ("Let me A, B, and C") is split; a non-commitment sentence stays whole. A clause counts only
+// if it carries a commitment verb — so a confirmation sentence ("…are supported.") is dropped and
+// the real deliverable in a later sentence ("I'll get you the report") becomes the action.
+function deriveActionTitles(text) {
+  const stripped = String(text).trim()
+    .replace(/^(absolutely|sure|great|okay|ok|understood|got it|perfect|honestly|thanks)\b[^.?!]*?[,.!]\s+/i, '');
+  const COMMIT_VERB = /\b(?:send|confirm|line\s+up|get\s+you|prepare|schedule|share|provide|follow\s+up|set\s+up|build|scope|draft|pull\s+together|put\s+together|loop\s+in|bring|review|sync|deliver|write\s+up)\b/i;
+  const clauses = [];
+  for (const sent of stripped.split(/(?<=[.?!])\s+/)) {
+    const lead = sent.match(/^\s*(?:I'?ll|Let me|We'?ll|We will|I will|I can|We can)\s+(.*)$/i);
+    const parts = lead ? lead[1].split(/,\s+(?:and\s+)?/i) : [sent];
+    for (const p of parts) clauses.push(p.trim());
+  }
+  const actionClauses = clauses.filter((c) => c && COMMIT_VERB.test(c));
+  const titles = [];
+  for (const c of actionClauses.length ? actionClauses : [stripped]) {
+    const t = deriveActionTitle(c);
+    if (t && !titles.includes(t)) titles.push(t);
+  }
+  return titles.length ? titles : [deriveActionTitle(text)];
 }
 
 function deriveActionTitle(text) {
