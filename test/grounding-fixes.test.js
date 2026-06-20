@@ -175,6 +175,24 @@ test('Account survives same-vendor org-spelling variants (Acme vs Acme Inc)', ()
   assert.equal(analyzeTranscript(t).crmFields.Account, 'Northwind');
 });
 
+// ─── loop 4: the canonical POSITIVE path must verify (verify-skeptic, the real value path) ───
+
+test('short-acronym confirmations DO verify (Okta SSO, SOC 2, SAML, REST API, webhooks)', () => {
+  const sec = (req, se) =>
+    analyzeTranscript(`Maria (Security Lead, Northwind): ${req}\nPriya (Sales Engineer, Acme): ${se}`)
+      .rfpRows.find((r) => /security/i.test(r.question)).status;
+  const intg = (req, se) =>
+    analyzeTranscript(`Dan (VP Engineering, Northwind): ${req}\nPriya (Sales Engineer, Acme): ${se}`)
+      .rfpRows.find((r) => /integration/i.test(r.question)).status;
+  // These all share the IDENTICAL keyword with the requirement — a <=4-char acronym the old
+  // length>4 filter dropped, silently failing the engine's primary value path.
+  assert.equal(sec('we need SSO via Okta', 'Okta SSO is supported.'), 'verified');
+  assert.equal(sec('we need SOC 2 compliance', 'We are SOC 2 compliant.'), 'verified');
+  assert.equal(sec('we need SAML SSO', 'SAML SSO is supported.'), 'verified');
+  assert.equal(intg('we need a REST API to integrate', 'We have a REST API.'), 'verified');
+  assert.equal(intg('we need webhooks to integrate', 'Webhooks are supported.'), 'verified');
+});
+
 test('S12: a partial-token-overlap quote is NOT accepted as grounded (no fuzzy hole)', () => {
   const out = verifyEvidenceGrounding(
     { rfpRows: [{ question: 'q', suggestedAnswer: 'a', status: 'verified', evidence: { quote: 'EU residency Okta totally fabricated nonsense', line: 1 } }] },

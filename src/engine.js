@@ -563,13 +563,26 @@ function rfpAnswer(_req) {
 
 /** Return true if two strings share at least one significant keyword */
 function sharesKeywords(a, b) {
-  const words = (s) =>
-    s
-      .toLowerCase()
-      .split(/\W+/)
-      .filter((w) => w.length > 4);
-  const setA = new Set(words(a));
-  return words(b).some((w) => setA.has(w));
+  // Significant shared keyword — NOT a length threshold. Enterprise asks ARE short acronyms
+  // (SSO=3, SOC=3, API=3, Okta=4, SAML=4); the old `length > 4` filter silently failed to verify
+  // a legitimate, identical-keyword "Okta SSO is supported" confirmation (verify-skeptic
+  // refutation — the engine's primary value path). Filter common words via a stoplist instead,
+  // and strip trivial plurals so webhook/webhooks match.
+  const STOP = new Set([
+    'the', 'and', 'with', 'need', 'would', 'that', 'this', 'your', 'our', 'their', 'from', 'have',
+    'will', 'about', 'into', 'what', 'when', 'where', 'which', 'there', 'they', 'them', 'then', 'than',
+    'also', 'some', 'more', 'most', 'very', 'just', 'like', 'make', 'made', 'does', 'done', 'both',
+    'each', 'only', 'over', 'must', 'able', 'want', 'take', 'give', 'data', 'call', 'team', 'time',
+    'plan', 'help', 'sure', 'okay', 'good', 'great', 'thanks', 'yes', 'are', 'was', 'were', 'has',
+    'its', 'for', 'but', 'not', 'all', 'any', 'get', 'can', 'you', 'use', 'via', 'per', 'out', 'now',
+    'one', 'two', 'too', 'let', 'see', 'say', 'set', 'run', 'day', 'is',
+  ]);
+  const stem = (w) => (w.length > 4 && w.endsWith('s') ? w.slice(0, -1) : w);
+  const keys = (s) =>
+    new Set((String(s).toLowerCase().match(/[a-z0-9]+/g) ?? []).filter((w) => w.length >= 2 && !STOP.has(w)).map(stem));
+  const setA = keys(a);
+  for (const w of keys(b)) if (setA.has(w)) return true;
+  return false;
 }
 
 function findEconomicBuyer(utterances) {
