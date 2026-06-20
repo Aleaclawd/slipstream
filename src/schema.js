@@ -134,11 +134,10 @@ export function verifyEvidenceGrounding(result, transcript) {
     const lt = lineText(e.line);
     const q = norm(e.quote);
     if (!lt || !q) return false;
-    if (lt.includes(q) || q.includes(lt)) return true;
-    // Clipped spans: require >=60% of the quote's significant tokens to appear at the cited line.
-    const qt = q.split(' ').filter((w) => w.length > 3);
-    if (!qt.length) return false;
-    return qt.filter((w) => lt.includes(w)).length / qt.length >= 0.6;
+    // The quote must be a verbatim span of the cited line — substring either way (clipped span
+    // or a superset that includes the line). A partial-token overlap is NOT acceptance: the prior
+    // 60%-overlap branch let hallucinated quotes through (verify-skeptic refutation).
+    return lt.includes(q) || q.includes(lt);
   };
   const scrub = (xs) => arr(xs).forEach((f) => { if (f && !grounded(f.evidence)) f.evidence = null; });
   scrub(result.stakeholders); scrub(result.pains); scrub(result.requirements);

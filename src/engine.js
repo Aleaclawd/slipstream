@@ -129,11 +129,21 @@ export function analyzeTranscript(text) {
   const seByRole = seUtterance?.speaker || '';
   const seOrg = seUtterance?.org || null;
   const seSpeaker = seByRole || utterances.find((u) => u.speaker)?.speaker || '';
-  // True when an utterance is from the SE *identity* — name AND (org, when both are known),
-  // so a PROSPECT who shares the SE's first name (e.g. both "Sam") is not mis-attributed (S29).
-  const isSE = (u) =>
-    Boolean(seSpeaker) && u.speaker === seSpeaker &&
-    (seOrg == null || u.org == null || u.org === seOrg);
+  // Normalize org names so trivial spelling variants of the same vendor ("Acme" / "Acme Inc" /
+  // "Acme, Inc.") compare equal (verify-skeptic refutation).
+  const normOrg = (o) =>
+    String(o || '').toLowerCase().replace(/[.,]/g, ' ')
+      .replace(/\b(?:inc|llc|corp|co|ltd|company|gmbh|plc)\b/g, ' ').replace(/\s+/g, ' ').trim();
+  const seOrgNorm = normOrg(seOrg);
+  // SE-SIDE = anyone selling: a recognized SE/AE role, OR the same (normalized) seller org, OR
+  // the resolved SE name. So a second seller rep (an AE alongside the SE) is also SE-side — their
+  // actions are owned 'SE' and their lines aren't mined as prospect requirements (S29 + multi-rep).
+  // A prospect sharing the SE's first name is excluded by the org check.
+  const isSE = (u) => Boolean(
+    SE_ROLE_RE.test(u.role || '') ||
+    (seOrgNorm && u.org && normOrg(u.org) === seOrgNorm) ||
+    (seSpeaker && u.speaker === seSpeaker && (seOrg == null || u.org == null || normOrg(u.org) === seOrgNorm))
+  );
   // Account = the PROSPECT org: first org from a speaker who isn't the SE (the SE's own org
   // would otherwise win just by speaking first). Fall back to any org, then "Unknown".
   // Account = the PROSPECT org. Exclude the SELLER ORG (not just the single SE name) so a
@@ -141,7 +151,7 @@ export function analyzeTranscript(text) {
   // seller's own org (verify-skeptic refutation). Fall back to name-exclusion when the SE has
   // no role/org tag, then to any org.
   const firstOrg =
-    utterances.find((u) => u.org && (seOrg ? u.org !== seOrg : u.speaker && u.speaker !== seSpeaker))?.org ||
+    utterances.find((u) => u.org && (seOrgNorm ? normOrg(u.org) !== seOrgNorm : u.speaker && u.speaker !== seSpeaker))?.org ||
     utterances.find((u) => u.org && u.speaker && u.speaker !== seSpeaker)?.org ||
     utterances.find((u) => u.org)?.org ||
     'Unknown';
@@ -297,7 +307,7 @@ export function analyzeTranscript(text) {
   // marks the category "contested" so a retraction in an ADJACENT sentence or a LATER SE
   // utterance — which the per-clause checks miss — still blocks 'verified' (verify-skeptic
   // refutation: negation-laundering across sentences/utterances).
-  const RETRACT_RE = /\bnot\s+(?:available|supported|yet|certified|live|ready|in\s+place)\b|\bnot\s+yet\b|\bon\s+(?:our|the)\s+roadmap\b|\bcoming\s+soon\b|\bin\s+beta\b|\bonce\s+(?:the\s+)?(?:contract|deal|paperwork|you|we)\b|\bafter\s+(?:the\s+)?(?:contract|signing)\b|\bnot\s+today\b/i;
+  const RETRACT_RE = /\bnot\s+(?:available|supported|yet|certified|live|ready|GA|generally\s+available|in\s+place)\b|\bnot\s+yet\b|\bno\s+\w+(?:\s+\w+){0,3}?\s+(?:yet|today)\b|\bon\s+(?:our|the)\s+(?:roadmap|backlog)\b|\bcoming\s+soon\b|\bin\s+(?:beta|preview|early\s+access)\b|\bearly\s+access\b|\bpending\b|\b(?:next|upcoming|future)\s+release\b|\b(?:planned|slated|targeting|targeted)\b|\bin\s+the\s+pipeline\b|\blimited\s+availability\b|\bonce\s+(?:the\s+)?(?:contract|deal|paperwork|you|we)\b|\bafter\s+(?:the\s+)?(?:contract|signing)\b|\bnot\s+today\b/i;
   const catOf = (t) =>
     SECURITY_RE.test(t) ? 'security' : INTEGRATION_RE.test(t) ? 'integration' : SCALE_RE.test(t) ? 'scale' : null;
 

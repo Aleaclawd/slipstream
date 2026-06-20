@@ -149,3 +149,36 @@ test('Account is the prospect org even with two seller-side reps from the same v
   ].join('\n');
   assert.equal(analyzeTranscript(t).crmFields.Account, 'Northwind', 'a second seller rep must not flip the Account to the seller org');
 });
+
+// ─── loop 3: close verify-skeptic round-2 counterexamples (synonyms / spellings / fuzzy) ───
+// NOTE: the retraction allowlist is necessarily non-exhaustive (see commit message / report) —
+// these lock the specific phrasings the skeptic found, not a proof of universal coverage.
+
+test('roadmap/conditional synonyms (pending, next release, no … yet) stay unverified', () => {
+  const M = 'Maria (Security Lead, Northwind): we need SSO via Okta and EU data residency\n';
+  for (const seLine of [
+    'Priya (Sales Engineer, Acme): EU residency is supported, pending certification.',
+    'Priya (Sales Engineer, Acme): EU residency is supported in our next release.',
+    'Priya (Sales Engineer, Acme): EU residency is supported. There is no Okta SSO yet.',
+  ]) {
+    const sec = analyzeTranscript(M + seLine).rfpRows.find((r) => /security/i.test(r.question));
+    assert.equal(sec.status, 'unverified', `should stay unverified for: ${seLine}`);
+  }
+});
+
+test('Account survives same-vendor org-spelling variants (Acme vs Acme Inc)', () => {
+  const t = [
+    'Priya (Sales Engineer, Acme): hi',
+    'Jordan (Account Executive, Acme Inc): hi',
+    'Dan (VP Engineering, Northwind): reconciling shipment events by hand is killing us',
+  ].join('\n');
+  assert.equal(analyzeTranscript(t).crmFields.Account, 'Northwind');
+});
+
+test('S12: a partial-token-overlap quote is NOT accepted as grounded (no fuzzy hole)', () => {
+  const out = verifyEvidenceGrounding(
+    { rfpRows: [{ question: 'q', suggestedAnswer: 'a', status: 'verified', evidence: { quote: 'EU residency Okta totally fabricated nonsense', line: 1 } }] },
+    'EU residency and Okta SSO are supported',
+  );
+  assert.equal(out.rfpRows[0].status, 'unverified', 'partial-overlap citation must not keep verified');
+});
