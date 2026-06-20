@@ -16,10 +16,17 @@ function parseTranscript(text) {
   const lines = text.split('\n');
   const utterances = [];
 
-  // Pattern 1: [HH:MM] Speaker (Role, Org): text
-  const FULL_RE = /^\[(\d{2}:\d{2})\]\s+([^(]+?)\s+\(([^,)]+),\s*([^)]+)\):\s*(.*)$/;
-  // Pattern 2: Speaker: text  (no timestamp, no role)
-  const SIMPLE_RE = /^([A-Z][A-Za-z\s']+?):\s*(.+)$/;
+  // Pattern 1: "Name (Role, Org): text", with an OPTIONAL leading timestamp in any of
+  // the [MM:SS] / [H:MM:SS] / [HH:MM:SS] forms that Otter/Zoom/Fireflies/Gong/Fathom emit.
+  // The timestamp is optional so the default no-timestamp export shape still parses (was a
+  // total-failure case: zero stakeholders, all speaker=null).
+  const FULL_RE = /^(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*)?([^([\]]+?)\s+\(([^,)]+),\s*([^)]+)\):\s*(.*)$/;
+  // Pattern 2: "Speaker: text" — allow "Speaker 1:", lowercase names ('dan:'), and a
+  // leading timestamp, which ASR/meeting tools commonly emit.
+  const SIMPLE_RE = /^(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s*)?([A-Za-z][A-Za-z0-9\s'._-]{0,39}?):\s+(.+)$/;
+  // Lines like "Action Items:", "Next Steps:", "Summary:" are section headers in pasted
+  // notes, not dialogue — don't let SIMPLE_RE turn them into phantom speakers.
+  const SECTION_HEADER = /^(action items?|next steps?|meeting notes?|notes?|agenda|attendees?|summary|recap|todo|to-?do|follow[- ]?ups?|key takeaways?|decisions?|risks?)$/i;
 
   for (let i = 0; i < lines.length; i++) {
     const lineNo = i + 1; // 1-based
@@ -30,21 +37,21 @@ function parseTranscript(text) {
     if ((m = FULL_RE.exec(trimmed))) {
       utterances.push({
         lineNo,
-        ts: m[1],
+        ts: m[1] ?? null,
         speaker: m[2].trim(),
         role: m[3].trim(),
         org: m[4].trim(),
         text: m[5].trim(),
         raw: trimmed,
       });
-    } else if ((m = SIMPLE_RE.exec(trimmed))) {
+    } else if ((m = SIMPLE_RE.exec(trimmed)) && !SECTION_HEADER.test(m[2].trim())) {
       utterances.push({
         lineNo,
-        ts: null,
-        speaker: m[1].trim(),
+        ts: m[1] ?? null,
+        speaker: m[2].trim(),
         role: null,
         org: null,
-        text: m[2].trim(),
+        text: m[3].trim(),
         raw: trimmed,
       });
     } else {
@@ -114,9 +121,19 @@ export function analyzeTranscript(text) {
   // ── Summary ──
   // The seller's own rep (SE): detected by role, else the first speaker. Used to attribute
   // commitments, pick the prospect org, and sign the follow-up — never hardcoded to a sample name.
-  const seByRole =
-    utterances.find((u) => /\b(SE|sales eng|solutions?\s*(consultant|engineer|architect)|account exec|\bAE\b)\b/i.test(u.role || ''))?.speaker || '';
+  // SE role detection. S18 fix: the prior regex put a trailing \b right after "eng"/"exec",
+  // which mid-word-blocked the product's OWN canonical titles — "Sales Engineer" and
+  // "Account Executive" both returned false, breaking SE/prospect attribution downstream.
+  const SE_ROLE_RE = /\b(?:SE|AE)\b|sales\s+eng(?:ineer)?|solutions?\s+(?:consultant|engineer|architect)|account\s+exec(?:utive)?/i;
+  const seUtterance = utterances.find((u) => SE_ROLE_RE.test(u.role || ''));
+  const seByRole = seUtterance?.speaker || '';
+  const seOrg = seUtterance?.org || null;
   const seSpeaker = seByRole || utterances.find((u) => u.speaker)?.speaker || '';
+  // True when an utterance is from the SE *identity* — name AND (org, when both are known),
+  // so a PROSPECT who shares the SE's first name (e.g. both "Sam") is not mis-attributed (S29).
+  const isSE = (u) =>
+    Boolean(seSpeaker) && u.speaker === seSpeaker &&
+    (seOrg == null || u.org == null || u.org === seOrg);
   // Account = the PROSPECT org: first org from a speaker who isn't the SE (the SE's own org
   // would otherwise win just by speaking first). Fall back to any org, then "Unknown".
   const firstOrg =
@@ -163,8 +180,9 @@ export function analyzeTranscript(text) {
   for (const u of utterances) {
     if (!u.text) continue;
     // Requirements come from the prospect; skip the SE's own lines (their confirmations are
-    // handled separately, as RFP verification). Only skip when we identified the SE by role.
-    if (seByRole && u.speaker === seByRole) continue;
+    // handled separately, as RFP verification). S24: skip by resolved SE identity, not only
+    // when a role tag matched — otherwise a role-less SE's own pitch lines become "requirements".
+    if (isSE(u)) continue;
     // A line that is purely an objection/worry is captured as an objection, not a requirement —
     // unless it also states a concrete need.
     const objectionOnly = OBJECTION_RE.test(u.text) && !NEED_RE.test(u.text);
@@ -209,9 +227,12 @@ export function analyzeTranscript(text) {
     if (ACTION_RE.test(u.text)) {
       // A pain statement that merely contains "need to" is not an action.
       if (PAIN_SIGNALS.test(u.text) && !COMMIT_RE.test(u.text)) continue;
-      const isSELine = Boolean(seSpeaker) && u.speaker === seSpeaker;
-      const startsWithSE = SE_ACTION_RE.test(u.text);
-      const owner = isSELine || startsWithSE ? 'SE' : 'Prospect';
+      // Owner by SPEAKER identity, not by the text starting with "I'll" — a PROSPECT who says
+      // "I'll send you our data dictionary" must be owned as Prospect, not SE (S6/S13). The
+      // leading-verb heuristic is only a fallback for genuinely speaker-less lines.
+      const owner = isSE(u)
+        ? 'SE'
+        : (u.speaker ? 'Prospect' : (SE_ACTION_RE.test(u.text) ? 'SE' : 'Prospect'));
       const priority = P1_RE.test(u.text) ? 'P1' : 'P2';
       const tm = TIMEFRAME_RE.exec(u.text);
       const due = tm ? tm[0] : '';
@@ -257,24 +278,43 @@ export function analyzeTranscript(text) {
   result.demoPrep = demoPrepItems.slice(0, 6);
 
   // ── rfpRows ──
-  // SE utterances that confirmed something
-  const SE_CONFIRM_RE = /supported|confirm|I'll get you/i;
-  const seConfirmations = utterances.filter(
-    (u) => u.speaker && u.speaker === seSpeaker && SE_CONFIRM_RE.test(u.text)
-  );
+  // A genuine confirmation is an SE statement that a capability PRESENTLY EXISTS — never a
+  // future promise ("I'll confirm…", "let me…"), a negation ("not supported"), or a question.
+  // We evaluate at the CLAUSE level so a line like "EU residency and Okta SSO are supported.
+  // I'll get you the report." yields the confirmation from the first clause without the promise
+  // in the second laundering anything (S1/S5). Each confirmation is tagged with the requirement
+  // category it actually speaks to, so an SSO confirmation can't verify a scale row (S22).
+  const AFFIRM_RE = /\b(?:is|are|both|fully|natively|already)\s+supported\b|\bwe\s+(?:support|have|are|do|can|offer|provide|meet)\b|\b(?:is|are)\s+(?:supported|available|compliant|certified|in place)\b|\bsupported\b|\bcompliant\b|\bcertified\b/i;
+  const FUTURE_PROMISE_RE = /\b(?:i'?ll|we'?ll|i\s+will|we\s+will|let\s+me|going\s+to)\b/i;
+  const NEGATION_RE = /\b(?:not|cannot|can'?t|don'?t|won'?t|isn'?t|aren'?t|doesn'?t|never|unable)\b/i;
+  const catOf = (t) =>
+    SECURITY_RE.test(t) ? 'security' : INTEGRATION_RE.test(t) ? 'integration' : SCALE_RE.test(t) ? 'scale' : null;
+
+  const seConfirmClauses = [];
+  for (const u of utterances) {
+    if (!isSE(u)) continue;
+    for (const sentence of String(u.text).split(/(?<=[.?!])\s+/)) {
+      const s = sentence.trim();
+      if (!s || s.endsWith('?')) continue; // questions aren't confirmations
+      if (!AFFIRM_RE.test(s) || FUTURE_PROMISE_RE.test(s) || NEGATION_RE.test(s)) continue;
+      const category = catOf(s);
+      if (category) seConfirmClauses.push({ text: s, category, u });
+    }
+  }
 
   const allRfpSourceReqs = [...secReqs, ...intReqs, ...scaleReqs];
   for (const r of allRfpSourceReqs) {
-    // Match against the requirement's spoken text — NOT the raw quote, whose speaker tag
-    // ("Security Lead, …") would spuriously match an SE line that mentions "security".
-    const confirmed = seConfirmations.find((seU) =>
-      sharesKeywords(seU.text, r.text)
+    // 'verified' ONLY by a SAME-category affirmative confirmation that also shares a keyword.
+    // Deferred/negated capabilities stay 'unverified' (the SE's "I'll confirm…" promise is
+    // already captured as a tracked action in the actions loop).
+    const confirmed = seConfirmClauses.find(
+      (c) => c.category === r.category && sharesKeywords(c.text, r.text)
     );
     result.rfpRows.push({
       question: rfpQuestion(r),
       suggestedAnswer: confirmed ? `Confirmed on the call: "${trimText(confirmed.text, 100)}"` : rfpAnswer(r),
       status: confirmed ? 'verified' : 'unverified',
-      evidence: confirmed ? mkEvidence(confirmed) : r.evidence,
+      evidence: confirmed ? mkEvidence(confirmed.u) : r.evidence,
     });
   }
 
@@ -282,8 +322,14 @@ export function analyzeTranscript(text) {
   const champion = result.stakeholders.find((s) =>
     /VP|Director|Head|Lead|Data Eng/i.test(s.role)
   ) ?? result.stakeholders[0];
-  const economicBuyer = findEconomicBuyer(utterances);
-  const topP1 = result.actions.find((a) => a.priority === 'P1');
+  const ebFound = findEconomicBuyer(utterances);
+  const economicBuyer = ebFound.name;
+  // NextStep is the SELLER's next step — prefer an SE-owned P1, not just the first P1 in
+  // transcript order, which can be a PROSPECT's conditional ("If you can show us… ") (S25).
+  const topP1 =
+    result.actions.find((a) => a.owner === 'SE' && a.priority === 'P1') ||
+    result.actions.find((a) => a.owner === 'SE') ||
+    result.actions.find((a) => a.priority === 'P1');
 
   result.crmFields = {
     Account: firstOrg,
@@ -359,7 +405,8 @@ export function analyzeTranscript(text) {
   };
   const dimEvidence = {
     metrics: evOf(metricU),
-    economic_buyer: evOf(ebU),
+    // Cite the line that actually established the economic buyer, matching dimNotes (S26).
+    economic_buyer: ebFound.evidence ?? evOf(ebU),
     decision_criteria: result.requirements[0]?.evidence ?? null,
     decision_process: evOf(pocU),
     paper_process: evOf(paperU),
@@ -497,14 +544,17 @@ function sharesKeywords(a, b) {
 }
 
 function findEconomicBuyer(utterances) {
+  // Returns { name, evidence } so the MEDDPICC economic_buyer note and its cited line come
+  // from the SAME utterance (S26 — they used to be derived from independent searches and could
+  // cite a line that didn't establish the buyer).
   for (const u of utterances) {
     // Prefer a name right after the CFO mention ("our CFO, Lena").
     let m = /\bCFO\b[,:]?\s+(?:is\s+|named\s+)?([A-Z][a-z]+)/.exec(u.text);
-    if (m) return m[1];
+    if (m) return { name: m[1], evidence: mkEvidence(u) };
     // Or a named budget owner ("Lena ... controls budget").
     m = /([A-Z][a-z]+)\b[^.]*\bcontrols?\s+(?:the\s+)?budget/.exec(u.text);
-    if (m) return m[1];
-    if (/\bCFO\b/.test(u.text)) return 'CFO';
+    if (m) return { name: m[1], evidence: mkEvidence(u) };
+    if (/\bCFO\b/.test(u.text)) return { name: 'CFO', evidence: mkEvidence(u) };
   }
-  return '';
+  return { name: '', evidence: null };
 }

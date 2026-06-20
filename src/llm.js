@@ -8,7 +8,7 @@
 // If neither is available, throws LlmUnavailable and the server falls back to deterministic.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { EXTRACTION_JSON_SCHEMA, normalizeResult } from './schema.js';
+import { EXTRACTION_JSON_SCHEMA, normalizeResult, verifyEvidenceGrounding } from './schema.js';
 
 export const DEFAULT_MODEL = process.env.SLIPSTREAM_MODEL || 'claude-sonnet-4-6';
 // Claude Code model alias for the CLI path. Default haiku: fast (~90s) and plenty for
@@ -99,17 +99,27 @@ export async function analyzeWithClaude(transcript) {
       throw new LlmUnavailable('@anthropic-ai/sdk not installed (run: npm i @anthropic-ai/sdk)');
     }
     const client = new Anthropic();
-    const resp = await client.messages.create({
-      model: DEFAULT_MODEL,
-      max_tokens: 12000,
-      system: SYSTEM,
-      messages: [{ role: 'user', content: userMsg }],
-      output_config: { format: { type: 'json_schema', schema: EXTRACTION_JSON_SCHEMA } },
-    });
+    let resp;
+    try {
+      resp = await client.messages.create({
+        model: DEFAULT_MODEL,
+        max_tokens: 12000,
+        system: SYSTEM,
+        messages: [{ role: 'user', content: userMsg }],
+        output_config: { format: { type: 'json_schema', schema: EXTRACTION_JSON_SCHEMA } },
+      });
+    } catch (e) {
+      // Degrade gracefully to the deterministic path instead of 500-ing: any SDK/API error
+      // (auth / rate-limit / network / 4xx) becomes LlmUnavailable, which server.js catches.
+      throw new LlmUnavailable('Claude API error: ' + String(e?.message || e).slice(0, 200));
+    }
     if (resp.stop_reason === 'refusal') throw new LlmUnavailable('model declined the request');
     const text = resp.content.find((b) => b.type === 'text')?.text;
     if (!text) throw new LlmUnavailable('empty model response');
-    return { result: normalizeResult(JSON.parse(text)), model: DEFAULT_MODEL };
+    let parsed;
+    try { parsed = extractJson(text); } catch { throw new LlmUnavailable('could not parse JSON from API response'); }
+    // Verify every model-returned citation against the transcript before trusting it (S12).
+    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript), model: DEFAULT_MODEL };
   }
 
   // 2. claude CLI path — uses the host's authed Claude Code OAuth (auto-refreshing).
@@ -125,7 +135,7 @@ export async function analyzeWithClaude(transcript) {
     const text = typeof env.result === 'string' ? env.result : (env.text || '');
     let parsed;
     try { parsed = extractJson(text); } catch { throw new LlmUnavailable('claude CLI: could not parse JSON from result'); }
-    return { result: normalizeResult(parsed), model: `${CLI_MODEL} (claude cli)` };
+    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript), model: `${CLI_MODEL} (claude cli)` };
   }
 
   throw new LlmUnavailable('no ANTHROPIC_API_KEY and the claude CLI is unavailable');

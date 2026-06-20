@@ -116,6 +116,41 @@ export function normalizeResult(raw) {
   return result;
 }
 
+/**
+ * Enforce the grounding contract on an extraction result against the source transcript.
+ * The LLM path (llm.js) otherwise trusts model-returned `evidence` verbatim — a hallucinated
+ * quote at a non-existent line would ship as fact (S12). Here, any finding whose cited line is
+ * out of range or whose quote doesn't actually appear at that line loses its evidence (becomes
+ * ungrounded), and a 'verified' RFP row with a bad citation is downgraded to 'unverified'.
+ * No-op for the deterministic engine, whose evidence is grounded by construction.
+ */
+export function verifyEvidenceGrounding(result, transcript) {
+  if (!result || typeof result !== 'object') return result;
+  const lines = String(transcript ?? '').split('\n');
+  const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
+  const lineText = (n) => (Number.isInteger(n) && n >= 1 && n <= lines.length ? norm(lines[n - 1]) : '');
+  const grounded = (e) => {
+    if (!e || !Number.isFinite(e.line)) return false;
+    const lt = lineText(e.line);
+    const q = norm(e.quote);
+    if (!lt || !q) return false;
+    if (lt.includes(q) || q.includes(lt)) return true;
+    // Clipped spans: require >=60% of the quote's significant tokens to appear at the cited line.
+    const qt = q.split(' ').filter((w) => w.length > 3);
+    if (!qt.length) return false;
+    return qt.filter((w) => lt.includes(w)).length / qt.length >= 0.6;
+  };
+  const scrub = (xs) => arr(xs).forEach((f) => { if (f && !grounded(f.evidence)) f.evidence = null; });
+  scrub(result.stakeholders); scrub(result.pains); scrub(result.requirements);
+  scrub(result.objections); scrub(result.competitors); scrub(result.actions);
+  scrub(result.demoPrep); scrub(result.risks); scrub(result.nextBestActions); scrub(result.battlecards);
+  arr(result.dealHealth?.dimensions).forEach((d) => { if (d && !grounded(d.evidence)) d.evidence = null; });
+  arr(result.rfpRows).forEach((row) => {
+    if (row && !grounded(row.evidence)) { row.evidence = null; if (row.status === 'verified') row.status = 'unverified'; }
+  });
+  return result;
+}
+
 // --- JSON Schema for Claude structured output / prompt documentation ---
 function refWith(fields, required) {
   const props = {};
