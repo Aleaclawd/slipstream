@@ -108,3 +108,44 @@ test('verifyEvidenceGrounding nulls hallucinated citations and downgrades forged
   );
   assert.ok(ok.pains[0].evidence, 'a real citation must be preserved');
 });
+
+// ─── ① Grounding — retraction / conditional (verify-skeptic refutations, loop 2) ──────────
+
+test('a negation in an ADJACENT sentence blocks verification (no cross-sentence laundering)', () => {
+  const t = [
+    'Maria (Security Lead, Northwind): We need SSO via Okta and EU data residency.',
+    'Priya (Sales Engineer, Acme): EU residency and Okta SSO are supported on our roadmap. They are not available today.',
+  ].join('\n');
+  const sec = analyzeTranscript(t).rfpRows.find((row) => /security/i.test(row.question));
+  assert.equal(sec.status, 'unverified', 'a roadmap / not-available capability must not be verified');
+});
+
+test('a contract-conditional capability is not verified', () => {
+  const t = [
+    'Maria (Security Lead, Northwind): We need SSO via Okta and EU data residency.',
+    'Priya (Sales Engineer, Acme): We can support EU residency and Okta SSO once the contract is signed.',
+  ].join('\n');
+  const sec = analyzeTranscript(t).rfpRows.find((row) => /security/i.test(row.question));
+  assert.equal(sec.status, 'unverified', 'a contract-conditional is not a present confirmation');
+});
+
+test('a later SE utterance retracting a capability blocks an earlier confirmation', () => {
+  const t = [
+    'Maria (Security Lead, Northwind): We need EU data residency.',
+    'Priya (Sales Engineer, Acme): EU residency is supported.',
+    'Priya (Sales Engineer, Acme): Actually, correction — EU residency is not supported in your region.',
+  ].join('\n');
+  const sec = analyzeTranscript(t).rfpRows.find((row) => /security/i.test(row.question));
+  assert.equal(sec.status, 'unverified', 'a later retraction must contest the category');
+});
+
+// ─── ② Attribution — multi-seller-rep Account (verify-skeptic refutation, loop 2) ─────────
+
+test('Account is the prospect org even with two seller-side reps from the same vendor', () => {
+  const t = [
+    'Priya (Sales Engineer, Acme): Thanks for the time.',
+    'Jordan (Account Executive, Acme): Glad we could connect.',
+    'Dan (VP Engineering, Northwind): We reconcile shipment events by hand and it is killing us.',
+  ].join('\n');
+  assert.equal(analyzeTranscript(t).crmFields.Account, 'Northwind', 'a second seller rep must not flip the Account to the seller org');
+});

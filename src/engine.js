@@ -136,7 +136,12 @@ export function analyzeTranscript(text) {
     (seOrg == null || u.org == null || u.org === seOrg);
   // Account = the PROSPECT org: first org from a speaker who isn't the SE (the SE's own org
   // would otherwise win just by speaking first). Fall back to any org, then "Unknown".
+  // Account = the PROSPECT org. Exclude the SELLER ORG (not just the single SE name) so a
+  // multi-rep selling team (SE + AE from the same vendor org) can't flip the Account to the
+  // seller's own org (verify-skeptic refutation). Fall back to name-exclusion when the SE has
+  // no role/org tag, then to any org.
   const firstOrg =
+    utterances.find((u) => u.org && (seOrg ? u.org !== seOrg : u.speaker && u.speaker !== seSpeaker))?.org ||
     utterances.find((u) => u.org && u.speaker && u.speaker !== seSpeaker)?.org ||
     utterances.find((u) => u.org)?.org ||
     'Unknown';
@@ -287,16 +292,30 @@ export function analyzeTranscript(text) {
   const AFFIRM_RE = /\b(?:is|are|both|fully|natively|already)\s+supported\b|\bwe\s+(?:support|have|are|do|can|offer|provide|meet)\b|\b(?:is|are)\s+(?:supported|available|compliant|certified|in place)\b|\bsupported\b|\bcompliant\b|\bcertified\b/i;
   const FUTURE_PROMISE_RE = /\b(?:i'?ll|we'?ll|i\s+will|we\s+will|let\s+me|going\s+to)\b/i;
   const NEGATION_RE = /\b(?:not|cannot|can'?t|don'?t|won'?t|isn'?t|aren'?t|doesn'?t|never|unable)\b/i;
+  // A capability the SE marks as NOT presently available: explicit unavailability, a
+  // future/conditional ("once the contract…"), or roadmap/beta. Disqualifies a clause AND
+  // marks the category "contested" so a retraction in an ADJACENT sentence or a LATER SE
+  // utterance — which the per-clause checks miss — still blocks 'verified' (verify-skeptic
+  // refutation: negation-laundering across sentences/utterances).
+  const RETRACT_RE = /\bnot\s+(?:available|supported|yet|certified|live|ready|in\s+place)\b|\bnot\s+yet\b|\bon\s+(?:our|the)\s+roadmap\b|\bcoming\s+soon\b|\bin\s+beta\b|\bonce\s+(?:the\s+)?(?:contract|deal|paperwork|you|we)\b|\bafter\s+(?:the\s+)?(?:contract|signing)\b|\bnot\s+today\b/i;
   const catOf = (t) =>
     SECURITY_RE.test(t) ? 'security' : INTEGRATION_RE.test(t) ? 'integration' : SCALE_RE.test(t) ? 'scale' : null;
 
   const seConfirmClauses = [];
+  const contestedCategories = new Set();
   for (const u of utterances) {
     if (!isSE(u)) continue;
+    // If the SE negates/hedges a category ANYWHERE in this utterance, that category can't be
+    // 'verified' from this call — catches a retraction in an adjacent sentence the per-clause
+    // checks would miss ("…are supported. They are not available today.").
+    if (NEGATION_RE.test(u.text) || RETRACT_RE.test(u.text)) {
+      const c = catOf(u.text);
+      if (c) contestedCategories.add(c);
+    }
     for (const sentence of String(u.text).split(/(?<=[.?!])\s+/)) {
       const s = sentence.trim();
       if (!s || s.endsWith('?')) continue; // questions aren't confirmations
-      if (!AFFIRM_RE.test(s) || FUTURE_PROMISE_RE.test(s) || NEGATION_RE.test(s)) continue;
+      if (!AFFIRM_RE.test(s) || FUTURE_PROMISE_RE.test(s) || NEGATION_RE.test(s) || RETRACT_RE.test(s)) continue;
       const category = catOf(s);
       if (category) seConfirmClauses.push({ text: s, category, u });
     }
@@ -304,10 +323,10 @@ export function analyzeTranscript(text) {
 
   const allRfpSourceReqs = [...secReqs, ...intReqs, ...scaleReqs];
   for (const r of allRfpSourceReqs) {
-    // 'verified' ONLY by a SAME-category affirmative confirmation that also shares a keyword.
-    // Deferred/negated capabilities stay 'unverified' (the SE's "I'll confirm…" promise is
-    // already captured as a tracked action in the actions loop).
-    const confirmed = seConfirmClauses.find(
+    // 'verified' ONLY by a SAME-category affirmative confirmation that also shares a keyword,
+    // AND only if the SE never contested that category. Deferred/negated/conditional
+    // capabilities stay 'unverified' (the SE's "I'll confirm…" promise is captured as an action).
+    const confirmed = !contestedCategories.has(r.category) && seConfirmClauses.find(
       (c) => c.category === r.category && sharesKeywords(c.text, r.text)
     );
     result.rfpRows.push({
