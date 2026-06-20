@@ -18,6 +18,7 @@ import { dirname, join, extname } from 'node:path';
 
 import { analyzeTranscript } from './engine.js';
 import { analyzeWithClaude, llmConfigured, LlmUnavailable, DEFAULT_MODEL } from './llm.js';
+import { judgeVerifiedRfpRows } from './judge.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -137,11 +138,25 @@ const server = http.createServer(async (req, res) => {
       }
       if (!result) result = analyzeTranscript(transcript);
 
+      // ⑤ LLM-as-judge semantic verification (opt-in via useLlm, so the default deterministic
+      // path stays zero-latency): re-checks each 'verified' RFP row against the transcript and
+      // downgrades semantic false-positives the finite regex matcher can't catch. Graceful —
+      // an unavailable/erroring judge leaves the deterministic verdicts untouched.
+      let judged = false;
+      if (useLlm && llmConfigured()) {
+        const before = result.rfpRows.filter((r) => r.status === 'verified').length;
+        await judgeVerifiedRfpRows(result, transcript);
+        const after = result.rfpRows.filter((r) => r.status === 'verified').length;
+        judged = true;
+        if (after < before) note = `${note ? note + ' ' : ''}LLM judge downgraded ${before - after} RFP row(s) on semantic re-check.`;
+      }
+
       const meta = {
         generatedAt: new Date().toISOString(),
         engine,
         model,
         grounded: true,
+        judged,
         durationMs: Date.now() - started,
         note,
       };
