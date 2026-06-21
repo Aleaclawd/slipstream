@@ -20,6 +20,8 @@ test('scale requirements with explicit numbers are captured (S7)', () => {
   const r = analyzeTranscript(`${SE}\nRaj (Data Eng, Northwind): we do 120k requests per second and spikes to 2M rows on close.`);
   const scale = r.requirements.filter((x) => x.category === 'scale');
   assert.ok(scale.length >= 1, 'a numeric scale requirement should be captured');
+  // and the numeric content itself is captured, not just the category firing
+  assert.match(scale[0].text, /120k|2m|per second/i);
 });
 
 test('a multi-deliverable SE utterance becomes MULTIPLE actions (S4/S20)', () => {
