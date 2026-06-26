@@ -23,7 +23,7 @@ const result = analyzeTranscript(readFileSync(join(dir, '../samples/discovery-ca
 
 test('every UI renderer returns clean HTML on real engine output', () => {
   const checks = {
-    renderBrief: ['Pains', 'Follow-up email', 'CRM-ready'],
+    renderBrief: ['Pains', 'follow-up email', 'CRM-ready'],
     renderScorecard: ['MEDDPICC', '<svg'],
     renderRisks: ['<svg', 'Risks'],
     renderSteps: ['step', 'Recommended play'],
