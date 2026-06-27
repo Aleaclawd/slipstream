@@ -111,7 +111,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && path === '/api/sample') {
-      const txt = await readFile(join(ROOT, 'samples/discovery-call.txt'), 'utf8');
+      const sampleName = url.searchParams.get('name') === 'followup'
+        ? 'follow-up-call.txt'
+        : 'discovery-call.txt';
+      const txt = await readFile(join(ROOT, 'samples', sampleName), 'utf8');
       return send(res, 200, txt, { 'Content-Type': 'text/plain; charset=utf-8' });
     }
 

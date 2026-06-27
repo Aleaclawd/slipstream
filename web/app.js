@@ -2,12 +2,22 @@
 // API calls are RELATIVE to the page URL so the app works at the domain root and
 // behind a path prefix (e.g. studio.apit.fun/slipstream/).
 import { dealGaugeSVG, meddpiccBarsSVG, riskRadarSVG, mindMapSVG } from './views.js';
+import {
+  addCallToStoredThread,
+  buildThreadView,
+  createThread,
+  getThreadById,
+  listThreadSummaries,
+  loadThreads,
+} from './threads.js';
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-let last = null; // { meta, result }
+let last = null; // { meta, result, head? }
 let activeTab = 'brief';
+let threads = [];
+let currentThreadId = null;
 
 const TABS = [
   ['brief', 'Brief'], ['mindmap', 'Mind Map'], ['kanban', 'Kanban'], ['steps', 'Steps'],
@@ -15,10 +25,98 @@ const TABS = [
 ];
 const COLORS = ['#2ee6c4', '#4aa8ff', '#ffb454', '#ff6b6b', '#c47dff'];
 
+function selectedThread() {
+  return getThreadById(threads, currentThreadId);
+}
+
+function selectedThreadLabel() {
+  const thread = selectedThread();
+  return thread ? `Add call to ${thread.title}` : 'Add call to thread';
+}
+
+function setMetaError(message) {
+  $('meta').innerHTML = `<span class="note">✗ ${esc(message)}</span>`;
+}
+
+function setMetaBusy(message) {
+  $('meta').textContent = message;
+}
+
+function refreshThreads() {
+  threads = loadThreads();
+  if (currentThreadId && !selectedThread()) currentThreadId = threads[0]?.id || null;
+  renderThreadSidebar();
+}
+
+function renderCallHistory(thread) {
+  const host = $('callHistory');
+  if (!thread) {
+    host.innerHTML = '<div class="thread-empty">Load a thread to view saved calls.</div>';
+    return;
+  }
+  if (!thread.calls.length) {
+    host.innerHTML = '<div class="thread-empty">Thread is empty. Paste a call and click “Add call to thread”.</div>';
+    return;
+  }
+  host.innerHTML = thread.calls
+    .slice()
+    .reverse()
+    .map((call, reverseIndex) => {
+      const actualIndex = thread.calls.length - reverseIndex;
+      const line = call.result?.summary?.oneLiner || call.result?.actions?.[0]?.title || 'Saved call';
+      const engine = call.meta?.engine || 'deterministic';
+      return `<div class="call-row">
+        <div class="call-row-head">
+          <span class="call-name">${esc(call.label || `Call ${actualIndex}`)}</span>
+          <span class="call-time">${esc(new Date(call.createdAt).toLocaleString())}</span>
+        </div>
+        <div class="call-sub">${esc(engine)} · ${esc(line)}</div>
+      </div>`;
+    })
+    .join('');
+}
+
+function renderThreadSidebar() {
+  const thread = selectedThread();
+  $('appendThreadCall').textContent = selectedThreadLabel();
+  $('appendThreadCall').disabled = !thread;
+  $('threadMeta').textContent = thread
+    ? `${thread.calls.length} call${thread.calls.length === 1 ? '' : 's'} saved · ${thread.account || 'local-only continuity'}`
+    : 'Create or load a thread to preserve multi-call continuity in this browser.';
+
+  const summaries = listThreadSummaries(threads);
+  $('threadList').innerHTML = summaries.length
+    ? summaries.map((item) => {
+      const selected = item.id === currentThreadId;
+      const sub = `${item.callCount} call${item.callCount === 1 ? '' : 's'} · ${item.account || 'thread'}`;
+      return `<button class="thread-row${selected ? ' selected' : ''}" data-thread-id="${esc(item.id)}">
+        <span class="thread-title">${esc(item.title)}</span>
+        <span class="thread-sub">${esc(sub)}</span>
+      </button>`;
+    }).join('')
+    : '<div class="thread-empty">No threads saved yet. Create one for the private demo flow.</div>';
+
+  renderCallHistory(thread);
+}
+
+function showThread(threadId) {
+  currentThreadId = threadId;
+  refreshThreads();
+  const thread = selectedThread();
+  if (!thread) return;
+  if (!thread.calls.length) {
+    last = null;
+    $('output').hidden = true;
+    setMetaBusy(`Loaded ${thread.title}. Paste the next call and click “Add call to thread”.`);
+    return;
+  }
+  render(buildThreadView(thread));
+}
+
 // ---- grounding: the hero feature ----
 function evHtml(e) {
   if (!e || !e.quote) return `<div class="ev none">⚠ unverified — no transcript evidence</div>`;
-  const where = [e.speaker, e.ts].filter(Boolean).join(' · ');
+  const where = [e.callLabel, e.speaker, e.ts].filter(Boolean).join(' · ');
   return `<div class="ev"><span class="ln">line ${esc(e.line)}</span>${where ? ' · ' + esc(where) : ''} — “${esc(e.quote)}”</div>`;
 }
 const sevChip = (s) => `<span class="chip ${esc(s)}">${esc(s)}</span>`;
@@ -41,7 +139,7 @@ function renderBrief(r) {
   if (r.competitors.length) cards.push(card('Competitors', r.competitors.length, r.competitors.map((c) => `<div class="item"><div class="t">${esc(c.name)}</div>${evHtml(c.evidence)}</div>`).join('')));
   if (r.demoPrep.length) cards.push(card('Demo / POC prep', r.demoPrep.length, r.demoPrep.map((d) => `<div class="item"><div class="t">${esc(d.item)}</div>${d.rationale ? `<div class="meta-row">${esc(d.rationale)}</div>` : ''}${evHtml(d.evidence)}</div>`).join('')));
   if (r.rfpRows.length) cards.push(card('RFP / security seed rows', r.rfpRows.length, wide(r.rfpRows.map((x) => `<div class="item"><div class="line1"><span class="chip ${x.status}">${esc(x.status)}</span><span class="t">${esc(x.question)}</span></div><div class="meta-row">${esc(x.suggestedAnswer)}</div>${evHtml(x.evidence)}</div>`).join(''))));
-  if (r.followupEmail.subject || r.followupEmail.body) cards.push(card('Follow-up email', null, wide(`<div class="email"><span class="subj">Subject: ${esc(r.followupEmail.subject)}</span>\n\n${esc(r.followupEmail.body)}</div>`)));
+  if (r.followupEmail.subject || r.followupEmail.body) cards.push(card('Latest follow-up email', null, wide(`<div class="email"><span class="subj">Subject: ${esc(r.followupEmail.subject)}</span>\n\n${esc(r.followupEmail.body)}</div>`)));
   const kv = Object.entries(r.crmFields || {});
   if (kv.length) cards.push(card('CRM-ready fields', null, `<dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`));
   return `<div class="cards">${cards.join('')}</div>`;
@@ -124,6 +222,7 @@ function renderBattlecards(r) {
 }
 
 function renderTab() {
+  if (!last) return;
   const r = last.result;
   const v = $('view');
   if (activeTab === 'brief') v.innerHTML = renderBrief(r);
@@ -140,14 +239,30 @@ function renderTab() {
 function render(data) {
   last = data;
   const r = data.result;
-  $('dealName').textContent = r.summary.dealName || 'Deal';
-  $('oneLiner').textContent = r.summary.oneLiner || '';
+  $('dealName').textContent = data.head?.title || r.summary.dealName || 'Deal';
+  $('oneLiner').textContent = data.head?.subtitle || r.summary.oneLiner || '';
   $('tabs').innerHTML = TABS.map(([id, label]) => `<button class="tab${id === activeTab ? ' active' : ''}" data-tab="${id}" role="tab">${esc(label)}</button>`).join('');
   renderTab();
   $('output').hidden = false;
   const m = data.meta;
   const line = [`engine: ${m.engine}`, m.model ? `model: ${m.model}` : null, `${m.durationMs}ms`].filter(Boolean).join('  ·  ');
   $('meta').innerHTML = `<span class="ok">✓ ${esc(line)}</span>${m.note ? ` <span class="note">— ${esc(m.note)}</span>` : ''}`;
+}
+
+async function fetchExtraction(transcript, useLlm) {
+  const res = await fetch('api/extract', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ transcript, useLlm }),
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'extract failed');
+  return data;
+}
+
+async function loadSample(name) {
+  const url = name && name !== 'default' ? `api/sample?name=${encodeURIComponent(name)}` : 'api/sample';
+  $('transcript').value = await (await fetch(url)).text();
 }
 
 // ============================ actions ============================
@@ -157,17 +272,53 @@ async function analyze() {
   const btn = $('analyze');
   btn.disabled = true;
   const useLlm = $('useLlm').checked;
-  $('meta').textContent = useLlm ? 'analyzing with Claude (this can take ~1–2 min)…' : 'analyzing…';
+  setMetaBusy(useLlm ? 'analyzing with Claude (this can take ~1–2 min)…' : 'analyzing…');
   try {
-    const res = await fetch('api/extract', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ transcript, useLlm }) });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'extract failed');
-    render(data);
+    render(await fetchExtraction(transcript, useLlm));
   } catch (e) {
-    $('meta').innerHTML = `<span class="note">✗ ${esc(e.message)}</span>`;
+    setMetaError(e.message);
   } finally {
     btn.disabled = false;
   }
+}
+
+async function appendThreadCall() {
+  const thread = selectedThread();
+  const transcript = $('transcript').value.trim();
+  if (!thread) return setMetaError('Select or create a thread first.');
+  if (!transcript) return;
+
+  const btn = $('appendThreadCall');
+  btn.disabled = true;
+  const useLlm = $('useLlm').checked;
+  setMetaBusy(`saving this call into ${thread.title}…`);
+  try {
+    const data = await fetchExtraction(transcript, useLlm);
+    addCallToStoredThread(thread.id, {
+      transcript,
+      meta: data.meta,
+      result: data.result,
+      label: thread.calls.length ? `Call ${thread.calls.length + 1}` : 'Call 1',
+    });
+    refreshThreads();
+    render(buildThreadView(selectedThread()));
+    $('transcript').value = '';
+  } catch (e) {
+    setMetaError(e.message);
+  } finally {
+    btn.disabled = false;
+    renderThreadSidebar();
+  }
+}
+
+function createNewThread() {
+  const name = $('threadName').value.trim();
+  if (!name) return setMetaError('Enter a thread name or prospect before creating a thread.');
+  const thread = createThread({ title: name });
+  $('threadName').value = '';
+  currentThreadId = thread.id;
+  refreshThreads();
+  showThread(thread.id);
 }
 
 async function doExport(kind) {
@@ -191,17 +342,28 @@ async function doExport(kind) {
 
 // ============================ wiring ============================
 $('analyze').addEventListener('click', analyze);
-$('loadSample').addEventListener('click', async () => { $('transcript').value = await (await fetch('api/sample')).text(); });
+$('appendThreadCall').addEventListener('click', appendThreadCall);
+$('createThread').addEventListener('click', createNewThread);
+$('loadSample').addEventListener('click', async () => loadSample('default'));
+$('loadFollowup').addEventListener('click', async () => loadSample('followup'));
+$('threadList').addEventListener('click', (e) => {
+  const button = e.target.closest('.thread-row');
+  if (!button) return;
+  showThread(button.dataset.threadId);
+});
 $('tabs').addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (!t) return; activeTab = t.dataset.tab; renderTab(); });
 document.querySelectorAll('[data-export]').forEach((b) => b.addEventListener('click', () => doExport(b.dataset.export)));
 $('modalClose').addEventListener('click', () => ($('modal').hidden = true));
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('modal').hidden = true; });
 
 (async () => {
+  refreshThreads();
   try {
     const h = await (await fetch('api/health')).json();
     $('status').innerHTML = h.llm ? `<span class="dot">●</span> Claude ${esc(h.model)}` : `<span class="dot off">●</span> deterministic engine`;
-  } catch { $('status').textContent = 'offline'; }
+  } catch {
+    $('status').textContent = 'offline';
+  }
 })();
 
 // Exported for Node render tests (ignored by the browser module loader).

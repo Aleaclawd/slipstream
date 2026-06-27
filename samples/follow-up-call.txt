@@ -1,0 +1,8 @@
+Slipstream — Northwind follow-up technical review
+
+[00:00] Priya (SE, Acme): Thanks for jumping back in. Today I want to close the security questions, confirm the POC scope, and make sure we have the budget path lined up.
+[00:28] Dan (VP Engineering, Northwind): The first call was helpful. For this follow-up, we'd like the POC to cover Snowflake first and BigQuery right after, because both warehouses matter to us.
+[01:02] Maria (Security Lead, Northwind): We reviewed the SOC 2 package. We'll still need the completed security questionnaire, SAML for the admin console, and audit logs retained for a year.
+[01:39] Lena (CFO, Northwind): If the POC proves we can retire those two analyst workflows, I can sponsor budget this quarter. Procurement will need pricing and the ROI summary before July 15.
+[02:16] Dan (VP Engineering, Northwind): Also include our solutions architect, Noor, on the next call. She'll own the implementation review on our side.
+[02:43] Priya (SE, Acme): Perfect. I'll send the completed questionnaire and pricing by Friday, add BigQuery write-back to the POC plan, and put Noor on the next call invite.

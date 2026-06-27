@@ -22,28 +22,52 @@
     </header>
 
     <main>
-      <section class="input-pane">
-        <h1>Win the deal <span class="accent">between</span> the calls.</h1>
-        <p class="sub">
-          Paste a technical sales call. Slipstream returns a grounded action queue —
-          follow-up, demo prep, security/RFP seed rows, and CRM fields — with the
-          transcript evidence behind every claim.
-        </p>
+      <section class="workspace-shell">
+        <aside class="thread-pane">
+          <div class="thread-head">
+            <h2>Threads</h2>
+            <p>Local browser persistence for the private multi-call demo.</p>
+          </div>
 
-        <textarea
-          id="transcript"
-          spellcheck="false"
-          placeholder="Paste a sales-call transcript or discovery notes…"
-        ></textarea>
+          <div class="thread-create">
+            <input id="threadName" type="text" placeholder="Thread name or prospect" />
+            <button id="createThread" class="ghost sm">Create thread</button>
+          </div>
 
-        <div class="controls">
-          <button id="analyze" class="primary">Build action queue →</button>
-          <button id="loadSample" class="ghost">Load sample call</button>
-          <label class="toggle" title="Uses Claude if an API key is configured; otherwise the deterministic engine.">
-            <input type="checkbox" id="useLlm" /> <span>Use Claude</span>
-          </label>
-        </div>
-        <div class="meta" id="meta"></div>
+          <div class="thread-meta" id="threadMeta"></div>
+          <div class="thread-list" id="threadList"></div>
+
+          <div class="thread-history">
+            <h3>Call history</h3>
+            <div class="call-history" id="callHistory"></div>
+          </div>
+        </aside>
+
+        <section class="input-pane">
+          <h1>Win the deal <span class="accent">between</span> the calls.</h1>
+          <p class="sub">
+            Paste a technical sales call. Slipstream returns a grounded action queue —
+            follow-up, demo prep, security/RFP seed rows, and CRM fields — with the
+            transcript evidence behind every claim.
+          </p>
+
+          <textarea
+            id="transcript"
+            spellcheck="false"
+            placeholder="Paste a sales-call transcript or discovery notes…"
+          ></textarea>
+
+          <div class="controls">
+            <button id="analyze" class="primary">Build action queue →</button>
+            <button id="appendThreadCall" class="ghost" disabled>Add call to thread</button>
+            <button id="loadSample" class="ghost">Load sample call</button>
+            <button id="loadFollowup" class="ghost">Load follow-up call</button>
+            <label class="toggle" title="Uses Claude if an API key is configured; otherwise the deterministic engine.">
+              <input type="checkbox" id="useLlm" /> <span>Use Claude</span>
+            </label>
+          </div>
+          <div class="meta" id="meta"></div>
+        </section>
       </section>
 
       <section class="output-pane" id="output" hidden>
