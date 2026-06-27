@@ -19,13 +19,18 @@ import { dirname, join, extname } from 'node:path';
 import { analyzeTranscript } from './engine.js';
 import { analyzeWithClaude, llmConfigured, LlmUnavailable, DEFAULT_MODEL } from './llm.js';
 import { judgeVerifiedRfpRows } from './judge.js';
+import { verifyEvidenceGrounding } from './schema.js';
+import { LibraryStore, LibraryStoreError, MAX_LIBRARY_DOC_BYTES } from './store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3210);
+const LIBRARY_DIR = process.env.SLIPSTREAM_DATA_DIR || join(ROOT, 'data', 'library');
 // Bind address. Default 0.0.0.0 for portability; set HOST to a specific interface
 // (e.g. the Tailscale IP) to keep the app off the public interface — private by binding.
 const HOST = process.env.HOST || '0.0.0.0';
+const libraryStore = new LibraryStore(LIBRARY_DIR);
+const libraryReady = libraryStore.init();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -62,12 +67,29 @@ function csvCell(v) {
 }
 
 function toCsv(result) {
-  const rows = [['type', 'title_or_question', 'detail', 'owner_or_status', 'priority', 'evidence_line', 'evidence_quote']];
+  const rows = [[
+    'type', 'title_or_question', 'detail', 'owner_or_status', 'priority',
+    'answer_source', 'source_doc', 'source_section', 'source_line', 'source_quote',
+    'transcript_line', 'transcript_quote',
+  ]];
   for (const a of result.actions) {
-    rows.push(['action', a.title, a.due || '', a.owner, a.priority, a.evidence?.line ?? '', a.evidence?.quote ?? '']);
+    rows.push([
+      'action', a.title, a.due || '', a.owner, a.priority,
+      '', '', '', '', '',
+      a.evidence?.line ?? '', a.evidence?.quote ?? '',
+    ]);
   }
   for (const r of result.rfpRows) {
-    rows.push(['rfp', r.question, r.suggestedAnswer, r.status, '', r.evidence?.line ?? '', r.evidence?.quote ?? '']);
+    rows.push([
+      'rfp', r.question, r.suggestedAnswer, r.status, '',
+      r.answerSource ?? 'none',
+      r.libraryEvidence?.docName ?? '',
+      r.libraryEvidence?.heading ?? '',
+      r.libraryEvidence?.line ?? '',
+      r.libraryEvidence?.quote ?? '',
+      r.evidence?.line ?? '',
+      r.evidence?.quote ?? '',
+    ]);
   }
   return rows.map((r) => r.map(csvCell).join(',')).join('\n');
 }
@@ -100,6 +122,12 @@ async function serveStatic(res, urlPath) {
   }
 }
 
+function jsonError(res, error) {
+  if (!(error instanceof LibraryStoreError)) return false;
+  sendJson(res, error.status, { error: error.message });
+  return true;
+}
+
 const server = http.createServer(async (req, res) => {
   const { method } = req;
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -107,6 +135,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (method === 'GET' && path === '/api/health') {
+      await libraryReady;
       return sendJson(res, 200, { status: 'ok', llm: llmConfigured(), model: DEFAULT_MODEL });
     }
 
@@ -118,11 +147,48 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, txt, { 'Content-Type': 'text/plain; charset=utf-8' });
     }
 
+    if (method === 'GET' && path === '/favicon.ico') {
+      return send(res, 204, '', { 'Content-Type': 'image/x-icon' });
+    }
+
+    if (method === 'GET' && path === '/api/library') {
+      await libraryReady;
+      return sendJson(res, 200, { docs: libraryStore.listDocuments(), maxBytes: MAX_LIBRARY_DOC_BYTES });
+    }
+
+    if (method === 'POST' && path === '/api/library') {
+      await libraryReady;
+      let body;
+      try {
+        body = JSON.parse((await readBody(req, MAX_LIBRARY_DOC_BYTES + 50_000)) || '{}');
+      } catch (error) {
+        if (String(error?.message || '').includes('payload too large')) return sendJson(res, 413, { error: error.message });
+        throw error;
+      }
+      try {
+        const doc = await libraryStore.addDocument(body);
+        return sendJson(res, 200, { doc, docs: libraryStore.listDocuments() });
+      } catch (error) {
+        if (jsonError(res, error)) return;
+        throw error;
+      }
+    }
+
+    if (method === 'DELETE' && path.startsWith('/api/library/')) {
+      await libraryReady;
+      const docId = decodeURIComponent(path.slice('/api/library/'.length));
+      const deleted = await libraryStore.deleteDocument(docId);
+      return sendJson(res, deleted ? 200 : 404, deleted ? { deleted: true, docs: libraryStore.listDocuments() } : { error: 'document not found' });
+    }
+
     if (method === 'POST' && path === '/api/extract') {
       const { transcript = '', useLlm = false } = JSON.parse((await readBody(req)) || '{}');
       if (!transcript.trim()) return sendJson(res, 400, { error: 'transcript is empty' });
 
+      await libraryReady;
       const started = Date.now();
+      const libraryIndex = libraryStore.getIndex();
+      const baseResult = analyzeTranscript(transcript, { libraryIndex });
       let result;
       let engine = 'deterministic';
       let model = null;
@@ -130,8 +196,8 @@ const server = http.createServer(async (req, res) => {
 
       if (useLlm) {
         try {
-          const out = await analyzeWithClaude(transcript);
-          result = out.result;
+          const out = await analyzeWithClaude(transcript, { libraryIndex });
+          result = { ...out.result, rfpRows: baseResult.rfpRows };
           model = out.model;
           engine = 'claude';
         } catch (e) {
@@ -139,7 +205,8 @@ const server = http.createServer(async (req, res) => {
           note = `Claude path unavailable (${e.message}); used the deterministic engine.`;
         }
       }
-      if (!result) result = analyzeTranscript(transcript);
+      if (!result) result = baseResult;
+      result = verifyEvidenceGrounding(result, transcript, libraryIndex);
 
       // ⑤ LLM-as-judge semantic verification (opt-in via useLlm, so the default deterministic
       // path stays zero-latency): re-checks each 'verified' RFP row against the transcript and

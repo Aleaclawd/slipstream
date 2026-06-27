@@ -17,6 +17,9 @@ export const REQUIREMENT_CATEGORIES = [
   'integration', 'security', 'scale', 'feature', 'commercial', 'open_question',
 ];
 
+export const RFP_ANSWER_SOURCE = ['call', 'library', 'none'];
+export const UNVERIFIED_RFP_DRAFT = '[Draft — confirm with product]: state how Slipstream meets this requirement, or flag it as a gap.';
+
 // MEDDPICC — the 2026 enterprise-standard qualification methodology (adds
 // Competition + Paper Process to MEDDIC). Drives the deal-health scorecard.
 export const MEDDPICC_DIMENSIONS = [
@@ -55,9 +58,22 @@ export function emptyResult() {
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const int = (v, d = 0) => (Number.isFinite(v) ? Math.round(v) : d);
+const answerSource = (value) => (RFP_ANSWER_SOURCE.includes(value) ? value : 'none');
 const ev = (e) =>
   e && typeof e === 'object' && typeof e.quote === 'string'
     ? { quote: String(e.quote), line: Number.isFinite(e.line) ? e.line : 0, speaker: e.speaker ?? null, ts: e.ts ?? null }
+    : null;
+const libraryEv = (e) =>
+  e && typeof e === 'object' && typeof e.quote === 'string'
+    ? {
+        docId: String(e.docId ?? ''),
+        docName: String(e.docName ?? ''),
+        passageId: String(e.passageId ?? ''),
+        heading: String(e.heading ?? ''),
+        quote: String(e.quote),
+        line: Number.isFinite(e.line) ? e.line : 0,
+        score: Number.isFinite(e.score) ? Number(e.score) : 0,
+      }
     : null;
 const sev = (s) => (['high', 'med', 'low'].includes(s) ? s : 'med');
 const pri = (p) => (['P1', 'P2', 'P3'].includes(p) ? p : 'P2');
@@ -87,7 +103,10 @@ export function normalizeResult(raw) {
     demoPrep: arr(raw.demoPrep).map((d) => ({ item: String(d.item ?? ''), rationale: String(d.rationale ?? ''), evidence: ev(d.evidence) })),
     rfpRows: arr(raw.rfpRows).map((r) => ({
       question: String(r.question ?? ''), suggestedAnswer: String(r.suggestedAnswer ?? ''),
-      status: r.status === 'verified' ? 'verified' : 'unverified', evidence: ev(r.evidence),
+      status: r.status === 'verified' ? 'verified' : 'unverified',
+      evidence: ev(r.evidence),
+      answerSource: answerSource(r.answerSource),
+      libraryEvidence: libraryEv(r.libraryEvidence),
     })),
     crmFields: raw.crmFields && typeof raw.crmFields === 'object' ? raw.crmFields : {},
 
@@ -124,7 +143,7 @@ export function normalizeResult(raw) {
  * ungrounded), and a 'verified' RFP row with a bad citation is downgraded to 'unverified'.
  * No-op for the deterministic engine, whose evidence is grounded by construction.
  */
-export function verifyEvidenceGrounding(result, transcript) {
+export function verifyEvidenceGrounding(result, transcript, libraryIndex = null) {
   if (!result || typeof result !== 'object') return result;
   const lines = String(transcript ?? '').split('\n');
   const norm = (s) => String(s ?? '').toLowerCase().replace(/\s+/g, ' ').trim();
@@ -139,13 +158,35 @@ export function verifyEvidenceGrounding(result, transcript) {
     // 60%-overlap branch let hallucinated quotes through (verify-skeptic refutation).
     return lt.includes(q) || q.includes(lt);
   };
+  const groundedLibrary = (e) => {
+    if (!e || !e.passageId || !libraryIndex?.passagesById) return false;
+    if (!String(e.docName || '').trim() || !String(e.heading || '').trim()) return false;
+    const passage = libraryIndex.passagesById[e.passageId];
+    if (!passage) return false;
+    if (passage.docId !== e.docId || passage.docName !== e.docName || passage.heading !== e.heading) return false;
+    return norm(passage.text).includes(norm(e.quote));
+  };
   const scrub = (xs) => arr(xs).forEach((f) => { if (f && !grounded(f.evidence)) f.evidence = null; });
   scrub(result.stakeholders); scrub(result.pains); scrub(result.requirements);
   scrub(result.objections); scrub(result.competitors); scrub(result.actions);
   scrub(result.demoPrep); scrub(result.risks); scrub(result.nextBestActions); scrub(result.battlecards);
   arr(result.dealHealth?.dimensions).forEach((d) => { if (d && !grounded(d.evidence)) d.evidence = null; });
   arr(result.rfpRows).forEach((row) => {
-    if (row && !grounded(row.evidence)) { row.evidence = null; if (row.status === 'verified') row.status = 'unverified'; }
+    if (!row) return;
+    const source = row.answerSource || (row.libraryEvidence ? 'library' : 'call');
+    if (source === 'call' && !grounded(row.evidence)) {
+      row.evidence = null;
+      if (row.status === 'verified') row.status = 'unverified';
+      row.answerSource = 'none';
+      row.suggestedAnswer = UNVERIFIED_RFP_DRAFT;
+    }
+    if (source === 'library' && !groundedLibrary(row.libraryEvidence)) {
+      row.libraryEvidence = null;
+      if (row.status === 'verified') row.status = 'unverified';
+      row.answerSource = 'none';
+      row.suggestedAnswer = UNVERIFIED_RFP_DRAFT;
+    }
+    if (row.answerSource !== 'library') row.libraryEvidence = row.libraryEvidence ?? null;
   });
   return result;
 }
@@ -178,7 +219,55 @@ export const EXTRACTION_JSON_SCHEMA = {
     actions: { type: 'array', items: refWith({ title: 'string', owner: 'string', due: 'string', priority: { type: 'string', enum: ['P1', 'P2', 'P3'] } }) },
     followupEmail: { type: 'object', additionalProperties: false, properties: { subject: { type: 'string' }, body: { type: 'string' } }, required: ['subject', 'body'] },
     demoPrep: { type: 'array', items: refWith({ item: 'string', rationale: 'string' }) },
-    rfpRows: { type: 'array', items: refWith({ question: 'string', suggestedAnswer: 'string', status: { type: 'string', enum: ['verified', 'unverified'] } }) },
+    rfpRows: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          question: { type: 'string' },
+          suggestedAnswer: { type: 'string' },
+          status: { type: 'string', enum: ['verified', 'unverified'] },
+          answerSource: { type: 'string', enum: RFP_ANSWER_SOURCE },
+          libraryEvidence: {
+            anyOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  docId: { type: 'string' },
+                  docName: { type: 'string' },
+                  passageId: { type: 'string' },
+                  heading: { type: 'string' },
+                  quote: { type: 'string' },
+                  line: { type: 'integer' },
+                  score: { type: 'number' },
+                },
+                required: ['docId', 'docName', 'passageId', 'heading', 'quote', 'line', 'score'],
+              },
+              { type: 'null' },
+            ],
+          },
+          evidence: {
+            anyOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  quote: { type: 'string' },
+                  line: { type: 'integer' },
+                  speaker: { type: ['string', 'null'] },
+                  ts: { type: ['string', 'null'] },
+                },
+                required: ['quote', 'line'],
+              },
+              { type: 'null' },
+            ],
+          },
+        },
+        required: ['question', 'suggestedAnswer', 'status', 'answerSource', 'libraryEvidence', 'evidence'],
+      },
+    },
     crmFields: { type: 'object', additionalProperties: { type: 'string' } },
     dealHealth: {
       type: 'object', additionalProperties: false,

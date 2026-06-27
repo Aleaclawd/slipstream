@@ -7,6 +7,7 @@
 // 'confirmed:false' verdict downgrades the row to 'unverified'. It NEVER strengthens a row, and any
 // error / unreachable LLM leaves the deterministic verdict untouched (graceful by construction).
 import { spawn } from 'node:child_process';
+import { UNVERIFIED_RFP_DRAFT } from './schema.js';
 
 const CLI_MODEL = process.env.SLIPSTREAM_JUDGE_MODEL || process.env.SLIPSTREAM_CLI_MODEL || 'haiku';
 // Tools/MCP locked OFF — the transcript is untrusted; a prompt-injected line must never execute.
@@ -57,6 +58,7 @@ export async function judgeVerifiedRfpRows(result, transcript, options = {}) {
   const judge = options.judge || ((input) => defaultClaudeJudge(input, options.timeoutMs));
   for (const row of result?.rfpRows ?? []) {
     if (row.status !== 'verified') continue;
+    if (row.answerSource && row.answerSource !== 'call') continue;
     let v;
     try {
       v = await judge({ transcript, question: row.question, claim: row.suggestedAnswer, evidence: row.evidence });
@@ -65,6 +67,8 @@ export async function judgeVerifiedRfpRows(result, transcript, options = {}) {
     }
     if (v && v.confirmed === false) {
       row.status = 'unverified';
+      row.answerSource = 'none';
+      row.suggestedAnswer = UNVERIFIED_RFP_DRAFT;
       if (v.reason) row.judgeNote = String(v.reason).slice(0, 200);
     }
   }

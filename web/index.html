@@ -67,6 +67,34 @@
             </label>
           </div>
           <div class="meta" id="meta"></div>
+
+          <section class="library-panel">
+            <div class="library-head">
+              <div>
+                <h2>Grounding library</h2>
+                <p>Paste or upload the exact product/security docs you want cited in RFP and security answers.</p>
+              </div>
+              <div class="library-meta" id="libraryMeta"></div>
+            </div>
+
+            <div class="library-form">
+              <input id="libraryDocName" type="text" placeholder="Document name" />
+              <textarea
+                id="libraryDocText"
+                spellcheck="false"
+                placeholder="Paste a product brief, security FAQ, SOC 2 summary, or markdown notes…"
+              ></textarea>
+              <div class="library-controls">
+                <label class="file-picker ghost sm">
+                  <input id="libraryFile" type="file" accept=".txt,.md,.markdown,.csv,.json,.yaml,.yml,.xml,text/*,application/json,application/xml" />
+                  <span>Load file</span>
+                </label>
+                <button id="saveLibraryDoc" class="ghost sm">Save to library</button>
+              </div>
+            </div>
+
+            <div class="library-list" id="libraryList"></div>
+          </section>
         </section>
       </section>
 
@@ -98,7 +126,7 @@
     </div>
 
     <footer>
-      <span>Grounded by construction — every finding cites the call. No evidence → flagged <em>unverified</em>, never asserted.</span>
+      <span>Grounded by construction — every finding cites the call or your library. No evidence → flagged <em>unverified</em>, never asserted.</span>
     </footer>
 
     <script src="app.js" type="module"></script>

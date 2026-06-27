@@ -40,3 +40,53 @@ test('every UI renderer returns clean HTML on real engine output', () => {
     assert.ok(!html.includes('undefined</'), `${fn} no undefined leakage`);
   }
 });
+
+test('renderBrief shows library citations and the deliberate unverified state copy', () => {
+  const html = app.renderBrief({
+    summary: { dealName: 'Northwind', oneLiner: 'One-liner' },
+    stakeholders: [],
+    pains: [],
+    requirements: [],
+    objections: [],
+    competitors: [],
+    actions: [],
+    followupEmail: { subject: '', body: '' },
+    demoPrep: [],
+    rfpRows: [
+      {
+        question: 'Security & compliance — can you meet: We need SSO via Okta?',
+        suggestedAnswer: 'Okta SSO is supported.',
+        status: 'verified',
+        answerSource: 'library',
+        libraryEvidence: {
+          docId: 'security-faq',
+          docName: 'Security FAQ.md',
+          passageId: 'security-faq:1',
+          heading: 'Security',
+          quote: 'Okta SSO is supported.',
+          line: 2,
+          score: 4.2,
+        },
+        evidence: { quote: 'We need SSO via Okta', line: 8, speaker: 'Maria', ts: null },
+      },
+      {
+        question: 'Scale & performance — can you handle: 50 million events a day?',
+        suggestedAnswer: '[Draft — confirm with product]: state how Slipstream meets this requirement, or flag it as a gap.',
+        status: 'unverified',
+        answerSource: 'none',
+        libraryEvidence: null,
+        evidence: { quote: 'We process 50 million events a day.', line: 11, speaker: 'Dan', ts: null },
+      },
+    ],
+    crmFields: {},
+    dealHealth: { score: 0, dimensions: [] },
+    risks: [],
+    nextBestActions: [],
+    battlecards: [],
+    analytics: { speakers: [], note: '' },
+  });
+
+  assert.match(html, /Security FAQ\.md · Security/);
+  assert.match(html, /Okta SSO is supported/);
+  assert.match(html, /No match in your library — needs a human, or add a doc/);
+});

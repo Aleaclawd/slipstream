@@ -18,6 +18,7 @@ let last = null; // { meta, result, head? }
 let activeTab = 'brief';
 let threads = [];
 let currentThreadId = null;
+let libraryDocs = [];
 
 const TABS = [
   ['brief', 'Brief'], ['mindmap', 'Mind Map'], ['kanban', 'Kanban'], ['steps', 'Steps'],
@@ -42,10 +43,40 @@ function setMetaBusy(message) {
   $('meta').textContent = message;
 }
 
+function setLibraryMeta(message) {
+  $('libraryMeta').textContent = message || '';
+}
+
 function refreshThreads() {
   threads = loadThreads();
   if (currentThreadId && !selectedThread()) currentThreadId = threads[0]?.id || null;
   renderThreadSidebar();
+}
+
+function renderLibraryList() {
+  $('libraryList').innerHTML = libraryDocs.length
+    ? libraryDocs.map((doc) => `<div class="library-doc">
+        <div>
+          <div class="library-doc-name">${esc(doc.docName)}</div>
+          <div class="library-doc-meta">${esc(doc.passageCount)} passage${doc.passageCount === 1 ? '' : 's'} · ${esc(doc.createdAt ? new Date(doc.createdAt).toLocaleString() : 'saved locally')}</div>
+        </div>
+        <button class="ghost sm" data-library-delete="${esc(doc.docId)}">Delete</button>
+      </div>`).join('')
+    : '<div class="library-empty">No grounding docs yet. Add the exact security or product text you want Slipstream to cite.</div>';
+}
+
+async function refreshLibrary() {
+  try {
+    const res = await fetch('api/library');
+    const data = await res.json();
+    libraryDocs = Array.isArray(data.docs) ? data.docs : [];
+    renderLibraryList();
+    setLibraryMeta(`${libraryDocs.length} doc${libraryDocs.length === 1 ? '' : 's'} loaded`);
+  } catch {
+    libraryDocs = [];
+    renderLibraryList();
+    setLibraryMeta('library offline');
+  }
 }
 
 function renderCallHistory(thread) {
@@ -119,6 +150,26 @@ function evHtml(e) {
   const where = [e.callLabel, e.speaker, e.ts].filter(Boolean).join(' · ');
   return `<div class="ev"><span class="ln">line ${esc(e.line)}</span>${where ? ' · ' + esc(where) : ''} — “${esc(e.quote)}”</div>`;
 }
+function requestEvidenceHtml(e) {
+  if (!e || !e.quote) return '';
+  const where = [e.callLabel, e.speaker, e.ts].filter(Boolean).join(' · ');
+  return `<div class="ev"><span class="ln">asked on call · line ${esc(e.line)}</span>${where ? ' · ' + esc(where) : ''} — “${esc(e.quote)}”</div>`;
+}
+function libraryEvidenceHtml(e) {
+  if (!e || !e.quote) return '';
+  return `<div class="ev library"><span class="ln">${esc(e.docName)} · ${esc(e.heading)}</span> · line ${esc(e.line)} — “${esc(e.quote)}”</div>`;
+}
+function sourceChipHtml(row) {
+  if (row.answerSource === 'call') return '<span class="chip source call">call-grounded</span>';
+  if (row.answerSource === 'library' && row.libraryEvidence) {
+    return `<span class="chip source library">${esc(row.libraryEvidence.docName)} · ${esc(row.libraryEvidence.heading)}</span>`;
+  }
+  return '<span class="chip source none">needs review</span>';
+}
+function unverifiedStateHtml(row) {
+  if (row.status !== 'unverified' || row.answerSource !== 'none') return '';
+  return '<div class="unverified-state">No match in your library — needs a human, or add a doc.</div>';
+}
 const sevChip = (s) => `<span class="chip ${esc(s)}">${esc(s)}</span>`;
 const priChip = (p) => `<span class="chip ${esc(String(p).toLowerCase())}">${esc(p)}</span>`;
 const scoreChip = (n) => `<span class="chip ${n >= 70 ? 'verified' : n >= 40 ? 'med' : 'high'}">${esc(n)}</span>`;
@@ -138,7 +189,7 @@ function renderBrief(r) {
   if (r.objections.length) cards.push(card('Objections', r.objections.length, r.objections.map((o) => `<div class="item"><div class="t">${esc(o.text)}</div>${evHtml(o.evidence)}</div>`).join('')));
   if (r.competitors.length) cards.push(card('Competitors', r.competitors.length, r.competitors.map((c) => `<div class="item"><div class="t">${esc(c.name)}</div>${evHtml(c.evidence)}</div>`).join('')));
   if (r.demoPrep.length) cards.push(card('Demo / POC prep', r.demoPrep.length, r.demoPrep.map((d) => `<div class="item"><div class="t">${esc(d.item)}</div>${d.rationale ? `<div class="meta-row">${esc(d.rationale)}</div>` : ''}${evHtml(d.evidence)}</div>`).join('')));
-  if (r.rfpRows.length) cards.push(card('RFP / security seed rows', r.rfpRows.length, wide(r.rfpRows.map((x) => `<div class="item"><div class="line1"><span class="chip ${x.status}">${esc(x.status)}</span><span class="t">${esc(x.question)}</span></div><div class="meta-row">${esc(x.suggestedAnswer)}</div>${evHtml(x.evidence)}</div>`).join(''))));
+  if (r.rfpRows.length) cards.push(card('RFP / security seed rows', r.rfpRows.length, wide(r.rfpRows.map((x) => `<div class="item"><div class="line1"><span class="chip ${x.status}">${esc(x.status)}</span>${sourceChipHtml(x)}<span class="t">${esc(x.question)}</span></div><div class="meta-row">${esc(x.suggestedAnswer)}</div>${x.answerSource === 'library' ? libraryEvidenceHtml(x.libraryEvidence) : ''}${x.answerSource !== 'call' ? requestEvidenceHtml(x.evidence) : evHtml(x.evidence)}${unverifiedStateHtml(x)}</div>`).join(''))));
   if (r.followupEmail.subject || r.followupEmail.body) cards.push(card('Latest follow-up email', null, wide(`<div class="email"><span class="subj">Subject: ${esc(r.followupEmail.subject)}</span>\n\n${esc(r.followupEmail.body)}</div>`)));
   const kv = Object.entries(r.crmFields || {});
   if (kv.length) cards.push(card('CRM-ready fields', null, `<dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`));
@@ -321,6 +372,45 @@ function createNewThread() {
   showThread(thread.id);
 }
 
+async function saveLibraryDoc() {
+  const name = $('libraryDocName').value.trim();
+  const text = $('libraryDocText').value.trim();
+  const file = $('libraryFile').files?.[0];
+  if (!name || !text) return setLibraryMeta('name and doc text are required');
+  setLibraryMeta('saving…');
+  try {
+    const res = await fetch('api/library', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name, text, contentType: file?.type || 'text/plain' }),
+    });
+    const data = await res.json();
+    if (!res.ok) return setLibraryMeta(data.error || 'save failed');
+    $('libraryDocName').value = '';
+    $('libraryDocText').value = '';
+    $('libraryFile').value = '';
+    libraryDocs = Array.isArray(data.docs) ? data.docs : libraryDocs;
+    renderLibraryList();
+    setLibraryMeta(`saved ${data.doc.docName}`);
+  } catch {
+    setLibraryMeta('save failed');
+  }
+}
+
+async function deleteLibraryDoc(docId) {
+  setLibraryMeta('deleting…');
+  try {
+    const res = await fetch(`api/library/${encodeURIComponent(docId)}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) return setLibraryMeta(data.error || 'delete failed');
+    libraryDocs = Array.isArray(data.docs) ? data.docs : [];
+    renderLibraryList();
+    setLibraryMeta('document removed');
+  } catch {
+    setLibraryMeta('delete failed');
+  }
+}
+
 async function doExport(kind) {
   if (!last) return;
   if (kind === 'webhook') {
@@ -344,12 +434,25 @@ async function doExport(kind) {
 $('analyze').addEventListener('click', analyze);
 $('appendThreadCall').addEventListener('click', appendThreadCall);
 $('createThread').addEventListener('click', createNewThread);
+$('saveLibraryDoc').addEventListener('click', saveLibraryDoc);
 $('loadSample').addEventListener('click', async () => loadSample('default'));
 $('loadFollowup').addEventListener('click', async () => loadSample('followup'));
+$('libraryFile').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  $('libraryDocName').value = file.name;
+  $('libraryDocText').value = await file.text();
+  setLibraryMeta(`loaded ${file.name}`);
+});
 $('threadList').addEventListener('click', (e) => {
   const button = e.target.closest('.thread-row');
   if (!button) return;
   showThread(button.dataset.threadId);
+});
+$('libraryList').addEventListener('click', (e) => {
+  const button = e.target.closest('[data-library-delete]');
+  if (!button) return;
+  deleteLibraryDoc(button.dataset.libraryDelete);
 });
 $('tabs').addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (!t) return; activeTab = t.dataset.tab; renderTab(); });
 document.querySelectorAll('[data-export]').forEach((b) => b.addEventListener('click', () => doExport(b.dataset.export)));
@@ -358,6 +461,7 @@ $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('mo
 
 (async () => {
   refreshThreads();
+  await refreshLibrary();
   try {
     const h = await (await fetch('api/health')).json();
     $('status').innerHTML = h.llm ? `<span class="dot">●</span> Claude ${esc(h.model)}` : `<span class="dot off">●</span> deterministic engine`;
