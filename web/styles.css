@@ -60,8 +60,8 @@ main {
 }
 .workspace-shell {
   display: grid;
-  grid-template-columns: 300px 1fr;
-  grid-template-areas: "thread input";
+  grid-template-columns: minmax(0, 1fr) 300px;
+  grid-template-areas: "input thread";
   gap: 22px;
   align-items: start;
 }
