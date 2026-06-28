@@ -61,6 +61,7 @@ main {
 .workspace-shell {
   display: grid;
   grid-template-columns: 300px 1fr;
+  grid-template-areas: "thread input";
   gap: 22px;
   align-items: start;
 }
@@ -72,6 +73,8 @@ main {
   padding: 18px;
   backdrop-filter: blur(12px);
 }
+.thread-pane { grid-area: thread; }
+.input-pane { grid-area: input; min-width: 0; }
 .input-pane h1 { font-size: 30px; font-weight: 800; letter-spacing: -0.025em; margin: 6px 0 8px; }
 .input-pane h1 .accent { color: var(--accent); font-style: italic; }
 .sub { color: var(--muted); max-width: 720px; margin: 0 0 18px; }
@@ -677,11 +680,13 @@ footer em { color: var(--warn); font-style: normal; }
   }
   .workspace-shell,
   .cards, .grid2, .committee, .kanban, .scorecard, .brief-grid, .brief-hero { grid-template-columns: 1fr; }
-  .workspace-shell { gap: 14px; }
-  .input-pane {
-    order: -1;
-    padding: 16px;
+  .workspace-shell {
+    grid-template-areas:
+      "input"
+      "thread";
+    gap: 14px;
   }
+  .input-pane { padding: 16px; }
   .thread-pane { padding: 16px; }
   .input-pane h1 {
     margin-top: 0;
