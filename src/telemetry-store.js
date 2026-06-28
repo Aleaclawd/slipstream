@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 
+const DEFAULT_EXPORT_KINDS = ['csv', 'json', 'markdown', 'html', 'webhook'];
+
 export class TelemetryStore {
   constructor(rootDir) {
     this.rootDir = rootDir;
@@ -51,15 +53,17 @@ export class TelemetryStore {
       exportClicked: 0,
       dealReturned: 0,
     };
-    const exportsByKind = { csv: 0, json: 0, webhook: 0 };
+    const exportsByKind = Object.fromEntries(DEFAULT_EXPORT_KINDS.map((kind) => [kind, 0]));
     const deals = new Map();
 
     for (const event of events) {
       if (event.type === 'call_processed') totals.callProcessed += 1;
       if (event.type === 'export_clicked') totals.exportClicked += 1;
       if (event.type === 'deal_returned') totals.dealReturned += 1;
-      if (event.type === 'export_clicked' && exportsByKind[event.exportKind] !== undefined) {
-        exportsByKind[event.exportKind] += 1;
+      if (event.type === 'export_clicked') {
+        const kind = String(event.exportKind || '').trim() || 'unknown';
+        if (exportsByKind[kind] === undefined) exportsByKind[kind] = 0;
+        exportsByKind[kind] += 1;
       }
 
       const dealId = String(event.dealId || '').trim();

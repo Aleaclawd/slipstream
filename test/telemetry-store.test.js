@@ -51,7 +51,7 @@ test('TelemetryStore summarizes local engagement events by type, export kind, an
     exportClicked: 2,
     dealReturned: 1,
   });
-  assert.deepEqual(summary.exportsByKind, { csv: 1, json: 1, webhook: 0 });
+  assert.deepEqual(summary.exportsByKind, { csv: 1, json: 1, markdown: 0, html: 0, webhook: 0 });
   assert.equal(summary.latestEventAt, '2026-06-20T16:23:00.000Z');
   assert.equal(summary.deals.length, 1);
   assert.deepEqual(summary.deals[0], {

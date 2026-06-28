@@ -12,6 +12,8 @@ import { TelemetryStore } from '../src/telemetry-store.js';
 const dir = dirname(fileURLToPath(import.meta.url));
 const callOne = readFileSync(join(dir, '../samples/discovery-call.txt'), 'utf8');
 const callTwo = readFileSync(join(dir, '../samples/follow-up-call.txt'), 'utf8');
+const securityDoc = readFileSync(join(dir, '../samples/demo-security-overview.md'), 'utf8');
+const platformDoc = readFileSync(join(dir, '../samples/demo-platform-brief.md'), 'utf8');
 
 test('saved deal API persists calls across reload and logs local telemetry events', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-'));
@@ -38,6 +40,22 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.equal(res.status, 200);
   assert.deepEqual(data.deals, []);
 
+  res = await fetch(`${base}/api/library`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Security Overview.md', text: securityDoc, contentType: 'text/markdown' }),
+  });
+  data = await res.json();
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/library`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ name: 'Platform Brief.md', text: platformDoc, contentType: 'text/markdown' }),
+  });
+  data = await res.json();
+  assert.equal(res.status, 200);
+
   res = await fetch(`${base}/api/deals`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -58,6 +76,8 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.equal(data.deal.calls.length, 1);
   assert.equal(data.view.head.dealId, dealId);
   assert.match(data.view.meta.note, /saved deal workspace/i);
+  assert.ok(data.brief);
+  assert.equal(data.brief.callCount, 1);
 
   res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
     method: 'POST',
@@ -68,6 +88,8 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.equal(res.status, 200);
   assert.equal(data.deal.calls.length, 2);
   assert.equal(data.deal.calls[1].label, 'Follow-up call');
+  assert.ok(data.brief);
+  assert.ok(data.brief.verifiedRequirements.length >= 1);
 
   const reloadedStore = await new DealStore(dealsDir).init();
   const reloadedDeal = reloadedStore.getDeal(dealId);
@@ -79,6 +101,8 @@ test('saved deal API persists calls across reload and logs local telemetry event
   data = await res.json();
   assert.equal(res.status, 200);
   assert.match(data.view.head.subtitle, /2 call/);
+  assert.ok(data.brief);
+  assert.equal(data.brief.dealId, dealId);
 
   res = await fetch(`${base}/api/export/csv`, {
     method: 'POST',
@@ -99,6 +123,28 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.doesNotMatch(json, /"dealId"/);
   assert.match(json, /Northwind expansion/);
 
+  res = await fetch(`${base}/api/export/brief/markdown`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dealId }),
+  });
+  const markdown = await res.text();
+  assert.equal(res.status, 200);
+  assert.match(markdown, /# Northwind expansion/);
+  assert.match(markdown, /\(#brief-transcript-/);
+  assert.match(markdown, /brief-library-/);
+
+  res = await fetch(`${base}/api/export/brief/html`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dealId }),
+  });
+  const html = await res.text();
+  assert.equal(res.status, 200);
+  assert.match(html, /Champion evidence packet/);
+  assert.match(html, /href="#brief-transcript-/);
+  assert.match(html, /href="#brief-library-/);
+
   const telemetry = await new TelemetryStore(telemetryDir).init();
   const events = await telemetry.listEvents();
   const callEvents = events.filter((event) => event.type === 'call_processed');
@@ -109,6 +155,6 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.deepEqual(callEvents.map((event) => event.callCount), [1, 2]);
   assert.equal(returnEvents.length, 1);
   assert.equal(returnEvents[0].dealId, dealId);
-  assert.equal(exportEvents.length, 2);
-  assert.deepEqual(exportEvents.map((event) => event.exportKind).sort(), ['csv', 'json']);
+  assert.equal(exportEvents.length, 4);
+  assert.deepEqual(exportEvents.map((event) => event.exportKind).sort(), ['csv', 'html', 'json', 'markdown']);
 });

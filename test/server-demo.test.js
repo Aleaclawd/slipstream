@@ -35,10 +35,12 @@ test('demo API seeds the private demo pack, persists it locally, and resets clea
   assert.equal(data.docs.length, 2);
   assert.equal(data.deal.calls.length, 2);
   assert.equal(data.view.head.title, 'Northwind Logistics');
+  assert.ok(data.brief);
+  assert.equal(data.brief.callCount, 2);
   assert.equal(data.dashboard.totals.callProcessed, 2);
   assert.equal(data.dashboard.totals.exportClicked, 2);
   assert.equal(data.dashboard.totals.dealReturned, 1);
-  assert.deepEqual(data.dashboard.exportsByKind, { csv: 1, json: 1, webhook: 0 });
+  assert.deepEqual(data.dashboard.exportsByKind, { csv: 1, json: 1, markdown: 0, html: 0, webhook: 0 });
   assert.equal(data.dashboard.deals[0].dealTitle, 'Northwind Logistics');
 
   const persistedDeals = await new DealStore(dealsDir).init();
