@@ -25,13 +25,13 @@
       <section class="workspace-shell">
         <aside class="thread-pane">
           <div class="thread-head">
-            <h2>Threads</h2>
-            <p>Local browser persistence for the private multi-call demo.</p>
+            <h2>Deal workspaces</h2>
+            <p>Saved locally on this host for the private multi-call return-flow demo.</p>
           </div>
 
           <div class="thread-create">
-            <input id="threadName" type="text" placeholder="Thread name or prospect" />
-            <button id="createThread" class="ghost sm">Create thread</button>
+            <input id="threadName" type="text" placeholder="Deal name or prospect" />
+            <button id="createThread" class="ghost sm">Create workspace</button>
           </div>
 
           <div class="thread-meta" id="threadMeta"></div>
@@ -59,7 +59,7 @@
 
           <div class="controls">
             <button id="analyze" class="primary">Build action queue →</button>
-            <button id="appendThreadCall" class="ghost" disabled>Add call to thread</button>
+            <button id="appendThreadCall" class="ghost" disabled>Add call to deal</button>
             <button id="loadSample" class="ghost">Load sample call</button>
             <button id="loadFollowup" class="ghost">Load follow-up call</button>
             <label class="toggle" title="Uses Claude if an API key is configured; otherwise the deterministic engine.">

@@ -79,5 +79,5 @@ test('thread storage round-trips and thread view exposes aggregate header metada
   assert.equal(loaded[0].calls[0].label, 'Discovery call');
   assert.equal(view.head.title, 'Northwind thread');
   assert.match(view.head.subtitle, /1 call/);
-  assert.equal(view.meta.engine, 'thread-local');
+  assert.equal(view.meta.engine, 'saved-workspace');
 });
