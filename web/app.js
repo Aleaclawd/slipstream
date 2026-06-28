@@ -17,12 +17,32 @@ let threads = [];
 let currentThreadId = null;
 let currentViewDealId = null;
 let libraryDocs = [];
+let dashboardSummary = emptyDashboardSummary();
 
 const TABS = [
   ['brief', 'Brief'], ['mindmap', 'Mind Map'], ['kanban', 'Kanban'], ['steps', 'Steps'],
   ['scorecard', 'Scorecard'], ['risks', 'Risks'], ['stakeholders', 'Stakeholders'], ['battlecards', 'Battlecards'],
 ];
 const COLORS = ['#2ee6c4', '#4aa8ff', '#ffb454', '#ff6b6b', '#c47dff'];
+
+function emptyDashboardSummary() {
+  return {
+    totals: {
+      totalEvents: 0,
+      callProcessed: 0,
+      exportClicked: 0,
+      dealReturned: 0,
+    },
+    exportsByKind: {
+      csv: 0,
+      json: 0,
+      webhook: 0,
+    },
+    latestEventAt: null,
+    deals: [],
+    recentEvents: [],
+  };
+}
 
 function selectedThread() {
   return getThreadById(threads, currentThreadId);
@@ -43,6 +63,10 @@ function setMetaBusy(message) {
 
 function setLibraryMeta(message) {
   $('libraryMeta').textContent = message || '';
+}
+
+function setDemoMeta(message) {
+  $('demoMeta').textContent = message || '';
 }
 
 async function refreshThreads() {
@@ -81,6 +105,86 @@ async function refreshLibrary() {
     libraryDocs = [];
     renderLibraryList();
     setLibraryMeta('library offline');
+  }
+}
+
+function dashboardStat(label, value, detail = '') {
+  return `<div class="dashboard-stat">
+    <span class="dashboard-stat-value">${esc(value)}</span>
+    <span class="dashboard-stat-label">${esc(label)}</span>
+    ${detail ? `<span class="dashboard-stat-detail">${esc(detail)}</span>` : ''}
+  </div>`;
+}
+
+function eventSummary(event) {
+  if (event.type === 'call_processed') {
+    return `${event.callLabel || 'Call'} processed · ${event.callCount} call${event.callCount === 1 ? '' : 's'} saved`;
+  }
+  if (event.type === 'export_clicked') {
+    return `${String(event.exportKind || 'export').toUpperCase()} export clicked`;
+  }
+  return `Workspace reopened · ${event.callCount} call${event.callCount === 1 ? '' : 's'} in view`;
+}
+
+function renderDashboard() {
+  const summary = dashboardSummary || emptyDashboardSummary();
+  const totals = summary.totals || emptyDashboardSummary().totals;
+  const exportsByKind = summary.exportsByKind || emptyDashboardSummary().exportsByKind;
+  const deals = Array.isArray(summary.deals) ? summary.deals : [];
+  const recentEvents = Array.isArray(summary.recentEvents) ? summary.recentEvents : [];
+  $('dashboardMeta').textContent = summary.latestEventAt
+    ? `Last activity ${new Date(summary.latestEventAt).toLocaleString()}`
+    : 'No local activity yet';
+  $('dashboardStats').innerHTML = [
+    dashboardStat('Calls processed', totals.callProcessed, `${totals.totalEvents} tracked event${totals.totalEvents === 1 ? '' : 's'}`),
+    dashboardStat('Workspace returns', totals.dealReturned, `${deals.length} active deal${deals.length === 1 ? '' : 's'}`),
+    dashboardStat('Exports', totals.exportClicked, `CSV ${exportsByKind.csv} · JSON ${exportsByKind.json} · Webhook ${exportsByKind.webhook}`),
+  ].join('');
+
+  if (!deals.length && !recentEvents.length) {
+    $('dashboardList').innerHTML = '<div class="thread-empty">Load the private demo pack or use a deal workspace to populate local engagement telemetry.</div>';
+    return;
+  }
+
+  const dealRows = deals.length
+    ? `<div class="dashboard-section">
+        <h4>Deal activity</h4>
+        ${deals.map((deal) => `<div class="dashboard-row">
+          <div class="dashboard-row-head">
+            <span class="dashboard-row-title">${esc(deal.dealTitle || deal.dealId)}</span>
+            <span class="dashboard-row-time">${esc(deal.callCount)} call${deal.callCount === 1 ? '' : 's'}</span>
+          </div>
+          <div class="dashboard-row-meta">${esc(deal.callProcessed)} processed · ${esc(deal.dealReturned)} returns · ${esc(deal.exportClicked)} exports</div>
+        </div>`).join('')}
+      </div>`
+    : '';
+
+  const recentRows = recentEvents.length
+    ? `<div class="dashboard-section">
+        <h4>Recent activity</h4>
+        ${recentEvents.map((event) => `<div class="dashboard-row">
+          <div class="dashboard-row-head">
+            <span class="dashboard-row-title">${esc(eventSummary(event))}</span>
+            <span class="dashboard-row-time">${esc(event.createdAt ? new Date(event.createdAt).toLocaleString() : '')}</span>
+          </div>
+          <div class="dashboard-row-meta">${esc(event.dealId || 'local')}</div>
+        </div>`).join('')}
+      </div>`
+    : '';
+
+  $('dashboardList').innerHTML = `${dealRows}${recentRows}`;
+}
+
+async function refreshDashboard() {
+  try {
+    const res = await fetch('api/dashboard');
+    const data = await res.json();
+    dashboardSummary = data.summary || emptyDashboardSummary();
+    renderDashboard();
+  } catch {
+    dashboardSummary = emptyDashboardSummary();
+    renderDashboard();
+    $('dashboardMeta').textContent = 'dashboard offline';
   }
 }
 
@@ -158,6 +262,7 @@ async function showThread(threadId, options = {}) {
     threads = Array.isArray(data.deals) ? data.deals : threads;
     renderThreadSidebar();
     render(data.view);
+    await refreshDashboard();
   } catch (error) {
     setMetaError(error.message);
     render(buildThreadView(thread));
@@ -381,6 +486,7 @@ async function appendThreadCall() {
     renderThreadSidebar();
     render(data.view);
     $('transcript').value = '';
+    await refreshDashboard();
   } catch (e) {
     setMetaError(e.message);
   } finally {
@@ -449,6 +555,53 @@ async function deleteLibraryDoc(docId) {
   }
 }
 
+async function loadDemoPack() {
+  setDemoMeta('loading…');
+  try {
+    const res = await fetch('api/demo/load', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'demo load failed');
+    threads = Array.isArray(data.deals) ? data.deals : [];
+    libraryDocs = Array.isArray(data.docs) ? data.docs : [];
+    dashboardSummary = data.dashboard || emptyDashboardSummary();
+    currentThreadId = data.demoDealId || threads[0]?.id || null;
+    renderLibraryList();
+    renderThreadSidebar();
+    renderDashboard();
+    if (data.view) render(data.view);
+    $('transcript').value = '';
+    setDemoMeta('loaded locally');
+    setLibraryMeta(`${libraryDocs.length} doc${libraryDocs.length === 1 ? '' : 's'} loaded`);
+  } catch (error) {
+    setDemoMeta(error.message || 'demo load failed');
+  }
+}
+
+async function resetDemoData() {
+  setDemoMeta('resetting…');
+  try {
+    const res = await fetch('api/demo/reset', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'reset failed');
+    threads = [];
+    libraryDocs = [];
+    dashboardSummary = data.dashboard || emptyDashboardSummary();
+    currentThreadId = null;
+    currentViewDealId = null;
+    last = null;
+    $('transcript').value = '';
+    $('output').hidden = true;
+    renderLibraryList();
+    renderThreadSidebar();
+    renderDashboard();
+    setDemoMeta('local data cleared');
+    setLibraryMeta('0 docs loaded');
+    setMetaBusy('Local demo data reset.');
+  } catch (error) {
+    setDemoMeta(error.message || 'reset failed');
+  }
+}
+
 async function doExport(kind) {
   if (!last) return;
   const dealId = currentViewDealId;
@@ -463,6 +616,7 @@ async function doExport(kind) {
     $('modalTitle').textContent = 'CRM webhook payload (stub — no outbound call made)';
     $('modalBody').textContent = `# Payload\n${JSON.stringify(data.payload, null, 2)}\n\n# Deliver it yourself:\n${data.curl}`;
     $('modal').hidden = false;
+    await refreshDashboard();
     return;
   }
   const res = await fetch(`api/export/${kind}`, {
@@ -480,6 +634,7 @@ async function doExport(kind) {
   a.download = kind === 'csv' ? 'slipstream-actions.csv' : 'slipstream-deal.json';
   a.click();
   URL.revokeObjectURL(a.href);
+  await refreshDashboard();
 }
 
 // ============================ wiring ============================
@@ -489,6 +644,8 @@ $('createThread').addEventListener('click', createNewThread);
 $('saveLibraryDoc').addEventListener('click', saveLibraryDoc);
 $('loadSample').addEventListener('click', async () => loadSample('default'));
 $('loadFollowup').addEventListener('click', async () => loadSample('followup'));
+$('loadDemoPack').addEventListener('click', loadDemoPack);
+$('resetDemoData').addEventListener('click', resetDemoData);
 $('libraryFile').addEventListener('change', async (e) => {
   const file = e.target.files?.[0];
   if (!file) return;
@@ -514,6 +671,7 @@ $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('mo
 (async () => {
   await refreshThreads();
   await refreshLibrary();
+  await refreshDashboard();
   try {
     const h = await (await fetch('api/health')).json();
     $('status').innerHTML = h.llm ? `<span class="dot">●</span> Claude ${esc(h.model)}` : `<span class="dot off">●</span> deterministic engine`;

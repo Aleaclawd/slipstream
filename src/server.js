@@ -20,9 +20,10 @@ import { analyzeTranscript } from './engine.js';
 import { analyzeWithClaude, llmConfigured, LlmUnavailable, DEFAULT_MODEL } from './llm.js';
 import { judgeVerifiedRfpRows } from './judge.js';
 import { verifyEvidenceGrounding } from './schema.js';
-import { DealStore, DealStoreError } from './deal-store.js';
-import { LibraryStore, LibraryStoreError, MAX_LIBRARY_DOC_BYTES } from './store.js';
-import { TelemetryStore } from './telemetry-store.js';
+import { DealStore, DealStoreError, resetDealStore } from './deal-store.js';
+import { LibraryStore, LibraryStoreError, MAX_LIBRARY_DOC_BYTES, resetLibraryStore } from './store.js';
+import { TelemetryStore, resetTelemetryStore } from './telemetry-store.js';
+import { seedDemoPack } from './demo-pack.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -203,6 +204,55 @@ async function recordExportTelemetry(kind, dealId, result) {
   });
 }
 
+async function buildDashboardSummary() {
+  await dealsReady;
+  await telemetryReady;
+  const summary = await telemetryStore.summarize();
+  return {
+    ...summary,
+    deals: summary.deals.map((entry) => {
+      const deal = dealStore.getDeal(entry.dealId);
+      return {
+        ...entry,
+        dealTitle: deal?.title || 'Unknown deal',
+        account: deal?.account || '',
+      };
+    }),
+  };
+}
+
+async function resetLocalData() {
+  await Promise.all([libraryReady, dealsReady, telemetryReady]);
+  await Promise.all([
+    resetLibraryStore(LIBRARY_DIR),
+    resetDealStore(DEALS_DIR),
+    resetTelemetryStore(TELEMETRY_DIR),
+  ]);
+  await Promise.all([
+    libraryStore.init(),
+    dealStore.init(),
+    telemetryStore.init(),
+  ]);
+}
+
+async function loadDemoPack() {
+  await resetLocalData();
+  const seeded = await seedDemoPack({
+    rootDir: ROOT,
+    libraryStore,
+    dealStore,
+    telemetryStore,
+    extractDealResult,
+  });
+  return {
+    ...seeded,
+    docs: libraryStore.listDocuments(),
+    deals: dealStore.listDeals(),
+    summaries: dealStore.listDealSummaries(),
+    dashboard: await buildDashboardSummary(),
+  };
+}
+
 const server = http.createServer(async (req, res) => {
   const { method } = req;
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -231,9 +281,28 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { docs: libraryStore.listDocuments(), maxBytes: MAX_LIBRARY_DOC_BYTES });
     }
 
+    if (method === 'GET' && path === '/api/dashboard') {
+      return sendJson(res, 200, { summary: await buildDashboardSummary() });
+    }
+
     if (method === 'GET' && path === '/api/deals') {
       await dealsReady;
       return sendJson(res, 200, { deals: dealStore.listDeals(), summaries: dealStore.listDealSummaries() });
+    }
+
+    if (method === 'POST' && path === '/api/demo/load') {
+      return sendJson(res, 200, await loadDemoPack());
+    }
+
+    if (method === 'POST' && path === '/api/demo/reset') {
+      await resetLocalData();
+      return sendJson(res, 200, {
+        reset: true,
+        deals: dealStore.listDeals(),
+        summaries: dealStore.listDealSummaries(),
+        docs: libraryStore.listDocuments(),
+        dashboard: await buildDashboardSummary(),
+      });
     }
 
     if (method === 'POST' && path === '/api/deals') {
