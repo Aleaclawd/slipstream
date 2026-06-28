@@ -13,6 +13,7 @@
   --bad: #ff6b6b;
   --good: #2ee6c4;
   --radius: 12px;
+  --safe-top: env(safe-area-inset-top, 0px);
   font-synthesis: none;
 }
 
@@ -664,8 +665,29 @@ footer em { color: var(--warn); font-style: normal; }
 .talk { display: flex; height: 12px; border-radius: 6px; overflow: hidden; border: 1px solid var(--line); margin: 10px 0; }
 
 @media (max-width: 820px) {
+  .topbar {
+    padding: calc(var(--safe-top) + 10px) 16px 10px;
+    gap: 12px;
+  }
+  .brand .name { font-size: 16px; }
+  .status { font-size: 11px; text-align: right; }
+  main {
+    padding: 12px 16px 52px;
+    gap: 18px;
+  }
   .workspace-shell,
   .cards, .grid2, .committee, .kanban, .scorecard, .brief-grid, .brief-hero { grid-template-columns: 1fr; }
+  .workspace-shell { gap: 14px; }
+  .input-pane {
+    order: -1;
+    padding: 16px;
+  }
+  .thread-pane { padding: 16px; }
+  .input-pane h1 {
+    margin-top: 0;
+    font-size: 27px;
+  }
+  .sub { margin-bottom: 14px; }
   .tabs { flex-wrap: nowrap; overflow-x: auto; }
   .brand .tag { display: none; }
   .thread-create { grid-template-columns: 1fr; }
