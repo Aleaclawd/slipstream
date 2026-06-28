@@ -3,12 +3,9 @@
 // behind a path prefix (e.g. studio.apit.fun/slipstream/).
 import { dealGaugeSVG, meddpiccBarsSVG, riskRadarSVG, mindMapSVG } from './views.js';
 import {
-  addCallToStoredThread,
   buildThreadView,
-  createThread,
   getThreadById,
   listThreadSummaries,
-  loadThreads,
 } from './threads.js';
 
 const $ = (id) => document.getElementById(id);
@@ -18,6 +15,7 @@ let last = null; // { meta, result, head? }
 let activeTab = 'brief';
 let threads = [];
 let currentThreadId = null;
+let currentViewDealId = null;
 let libraryDocs = [];
 
 const TABS = [
@@ -32,7 +30,7 @@ function selectedThread() {
 
 function selectedThreadLabel() {
   const thread = selectedThread();
-  return thread ? `Add call to ${thread.title}` : 'Add call to thread';
+  return thread ? `Add call to ${thread.title}` : 'Add call to deal';
 }
 
 function setMetaError(message) {
@@ -47,9 +45,16 @@ function setLibraryMeta(message) {
   $('libraryMeta').textContent = message || '';
 }
 
-function refreshThreads() {
-  threads = loadThreads();
-  if (currentThreadId && !selectedThread()) currentThreadId = threads[0]?.id || null;
+async function refreshThreads() {
+  try {
+    const res = await fetch('api/deals');
+    const data = await res.json();
+    threads = Array.isArray(data.deals) ? data.deals : [];
+  } catch {
+    threads = [];
+  }
+  if (!threads.length) currentThreadId = null;
+  else if (!selectedThread()) currentThreadId = currentThreadId || threads[0]?.id || null;
   renderThreadSidebar();
 }
 
@@ -82,11 +87,11 @@ async function refreshLibrary() {
 function renderCallHistory(thread) {
   const host = $('callHistory');
   if (!thread) {
-    host.innerHTML = '<div class="thread-empty">Load a thread to view saved calls.</div>';
+    host.innerHTML = '<div class="thread-empty">Select a deal workspace to view saved calls.</div>';
     return;
   }
   if (!thread.calls.length) {
-    host.innerHTML = '<div class="thread-empty">Thread is empty. Paste a call and click “Add call to thread”.</div>';
+    host.innerHTML = '<div class="thread-empty">This deal has no saved calls yet. Paste a call and click “Add call to deal”.</div>';
     return;
   }
   host.innerHTML = thread.calls
@@ -112,36 +117,51 @@ function renderThreadSidebar() {
   $('appendThreadCall').textContent = selectedThreadLabel();
   $('appendThreadCall').disabled = !thread;
   $('threadMeta').textContent = thread
-    ? `${thread.calls.length} call${thread.calls.length === 1 ? '' : 's'} saved · ${thread.account || 'local-only continuity'}`
-    : 'Create or load a thread to preserve multi-call continuity in this browser.';
+    ? `${thread.calls.length} call${thread.calls.length === 1 ? '' : 's'} saved · ${thread.account || 'local saved workspace'}`
+    : 'Create or select a deal workspace to preserve multi-call continuity on this host.';
 
   const summaries = listThreadSummaries(threads);
   $('threadList').innerHTML = summaries.length
     ? summaries.map((item) => {
       const selected = item.id === currentThreadId;
-      const sub = `${item.callCount} call${item.callCount === 1 ? '' : 's'} · ${item.account || 'thread'}`;
+      const sub = `${item.callCount} call${item.callCount === 1 ? '' : 's'} · ${item.account || 'saved deal'}`;
       return `<button class="thread-row${selected ? ' selected' : ''}" data-thread-id="${esc(item.id)}">
         <span class="thread-title">${esc(item.title)}</span>
         <span class="thread-sub">${esc(sub)}</span>
       </button>`;
     }).join('')
-    : '<div class="thread-empty">No threads saved yet. Create one for the private demo flow.</div>';
+    : '<div class="thread-empty">No deal workspaces saved yet. Create one for the return-flow demo.</div>';
 
   renderCallHistory(thread);
 }
 
-function showThread(threadId) {
+async function showThread(threadId, options = {}) {
   currentThreadId = threadId;
-  refreshThreads();
+  renderThreadSidebar();
   const thread = selectedThread();
   if (!thread) return;
   if (!thread.calls.length) {
     last = null;
+    currentViewDealId = null;
     $('output').hidden = true;
-    setMetaBusy(`Loaded ${thread.title}. Paste the next call and click “Add call to thread”.`);
+    setMetaBusy(`Loaded ${thread.title}. Paste the next call and click “Add call to deal”.`);
     return;
   }
-  render(buildThreadView(thread));
+  if (options.recordReturn === false) {
+    render(buildThreadView(thread));
+    return;
+  }
+  try {
+    const res = await fetch(`api/deals/${encodeURIComponent(threadId)}/return`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'deal load failed');
+    threads = Array.isArray(data.deals) ? data.deals : threads;
+    renderThreadSidebar();
+    render(data.view);
+  } catch (error) {
+    setMetaError(error.message);
+    render(buildThreadView(thread));
+  }
 }
 
 // ---- grounding: the hero feature ----
@@ -289,6 +309,7 @@ function renderTab() {
 
 function render(data) {
   last = data;
+  currentViewDealId = data.head?.dealId || null;
   const r = data.result;
   $('dealName').textContent = data.head?.title || r.summary.dealName || 'Deal';
   $('oneLiner').textContent = data.head?.subtitle || r.summary.oneLiner || '';
@@ -336,7 +357,7 @@ async function analyze() {
 async function appendThreadCall() {
   const thread = selectedThread();
   const transcript = $('transcript').value.trim();
-  if (!thread) return setMetaError('Select or create a thread first.');
+  if (!thread) return setMetaError('Select or create a deal workspace first.');
   if (!transcript) return;
 
   const btn = $('appendThreadCall');
@@ -344,15 +365,21 @@ async function appendThreadCall() {
   const useLlm = $('useLlm').checked;
   setMetaBusy(`saving this call into ${thread.title}…`);
   try {
-    const data = await fetchExtraction(transcript, useLlm);
-    addCallToStoredThread(thread.id, {
-      transcript,
-      meta: data.meta,
-      result: data.result,
-      label: thread.calls.length ? `Call ${thread.calls.length + 1}` : 'Call 1',
+    const res = await fetch(`api/deals/${encodeURIComponent(thread.id)}/calls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        transcript,
+        useLlm,
+        label: thread.calls.length ? `Call ${thread.calls.length + 1}` : 'Call 1',
+      }),
     });
-    refreshThreads();
-    render(buildThreadView(selectedThread()));
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'save failed');
+    threads = Array.isArray(data.deals) ? data.deals : threads;
+    currentThreadId = data.deal?.id || currentThreadId;
+    renderThreadSidebar();
+    render(data.view);
     $('transcript').value = '';
   } catch (e) {
     setMetaError(e.message);
@@ -362,14 +389,25 @@ async function appendThreadCall() {
   }
 }
 
-function createNewThread() {
+async function createNewThread() {
   const name = $('threadName').value.trim();
-  if (!name) return setMetaError('Enter a thread name or prospect before creating a thread.');
-  const thread = createThread({ title: name });
-  $('threadName').value = '';
-  currentThreadId = thread.id;
-  refreshThreads();
-  showThread(thread.id);
+  if (!name) return setMetaError('Enter a deal name or prospect before creating a workspace.');
+  setMetaBusy('creating deal workspace…');
+  try {
+    const res = await fetch('api/deals', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: name }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'create failed');
+    threads = Array.isArray(data.deals) ? data.deals : threads;
+    currentThreadId = data.deal?.id || null;
+    $('threadName').value = '';
+    await showThread(currentThreadId, { recordReturn: false });
+  } catch (error) {
+    setMetaError(error.message);
+  }
 }
 
 async function saveLibraryDoc() {
@@ -413,15 +451,29 @@ async function deleteLibraryDoc(docId) {
 
 async function doExport(kind) {
   if (!last) return;
+  const dealId = currentViewDealId;
   if (kind === 'webhook') {
-    const res = await fetch('api/export/webhook', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ result: last.result, meta: last.meta }) });
+    const res = await fetch('api/export/webhook', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ result: last.result, meta: last.meta, dealId }),
+    });
     const data = await res.json();
+    if (!res.ok) return setMetaError(data.error || 'export failed');
     $('modalTitle').textContent = 'CRM webhook payload (stub — no outbound call made)';
     $('modalBody').textContent = `# Payload\n${JSON.stringify(data.payload, null, 2)}\n\n# Deliver it yourself:\n${data.curl}`;
     $('modal').hidden = false;
     return;
   }
-  const res = await fetch(`api/export/${kind}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(kind === 'json' ? last : { result: last.result }) });
+  const res = await fetch(`api/export/${kind}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(kind === 'json' ? { ...last, dealId } : { result: last.result, dealId }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    return setMetaError(data.error || 'export failed');
+  }
   const blob = await res.blob();
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -460,7 +512,7 @@ $('modalClose').addEventListener('click', () => ($('modal').hidden = true));
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('modal').hidden = true; });
 
 (async () => {
-  refreshThreads();
+  await refreshThreads();
   await refreshLibrary();
   try {
     const h = await (await fetch('api/health')).json();

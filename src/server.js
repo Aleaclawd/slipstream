@@ -20,17 +20,25 @@ import { analyzeTranscript } from './engine.js';
 import { analyzeWithClaude, llmConfigured, LlmUnavailable, DEFAULT_MODEL } from './llm.js';
 import { judgeVerifiedRfpRows } from './judge.js';
 import { verifyEvidenceGrounding } from './schema.js';
+import { DealStore, DealStoreError } from './deal-store.js';
 import { LibraryStore, LibraryStoreError, MAX_LIBRARY_DOC_BYTES } from './store.js';
+import { TelemetryStore } from './telemetry-store.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
 const PORT = Number(process.env.PORT || 3210);
 const LIBRARY_DIR = process.env.SLIPSTREAM_DATA_DIR || join(ROOT, 'data', 'library');
+const DEALS_DIR = process.env.SLIPSTREAM_DEALS_DIR || join(ROOT, 'data', 'deals');
+const TELEMETRY_DIR = process.env.SLIPSTREAM_TELEMETRY_DIR || join(ROOT, 'data', 'telemetry');
 // Bind address. Default 0.0.0.0 for portability; set HOST to a specific interface
 // (e.g. the Tailscale IP) to keep the app off the public interface — private by binding.
 const HOST = process.env.HOST || '0.0.0.0';
 const libraryStore = new LibraryStore(LIBRARY_DIR);
 const libraryReady = libraryStore.init();
+const dealStore = new DealStore(DEALS_DIR);
+const dealsReady = dealStore.init();
+const telemetryStore = new TelemetryStore(TELEMETRY_DIR);
+const telemetryReady = telemetryStore.init();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -128,6 +136,73 @@ function jsonError(res, error) {
   return true;
 }
 
+function dealJsonError(res, error) {
+  if (!(error instanceof DealStoreError)) return false;
+  sendJson(res, error.status, { error: error.message });
+  return true;
+}
+
+async function extractDealResult({ transcript = '', useLlm = false }) {
+  if (!transcript.trim()) throw new Error('transcript is empty');
+
+  await libraryReady;
+  const started = Date.now();
+  const libraryIndex = libraryStore.getIndex();
+  const baseResult = analyzeTranscript(transcript, { libraryIndex });
+  let result;
+  let engine = 'deterministic';
+  let model = null;
+  let note = null;
+
+  if (useLlm) {
+    try {
+      const out = await analyzeWithClaude(transcript, { libraryIndex });
+      result = { ...out.result, rfpRows: baseResult.rfpRows };
+      model = out.model;
+      engine = 'claude';
+    } catch (error) {
+      if (!(error instanceof LlmUnavailable)) throw error;
+      note = `Claude path unavailable (${error.message}); used the deterministic engine.`;
+    }
+  }
+  if (!result) result = baseResult;
+  result = verifyEvidenceGrounding(result, transcript, libraryIndex);
+
+  let judged = false;
+  if (useLlm && llmConfigured()) {
+    const before = result.rfpRows.filter((row) => row.status === 'verified').length;
+    await judgeVerifiedRfpRows(result, transcript);
+    const after = result.rfpRows.filter((row) => row.status === 'verified').length;
+    judged = true;
+    if (after < before) note = `${note ? note + ' ' : ''}LLM judge downgraded ${before - after} RFP row(s) on semantic re-check.`;
+  }
+
+  return {
+    meta: {
+      generatedAt: new Date().toISOString(),
+      engine,
+      model,
+      grounded: true,
+      judged,
+      durationMs: Date.now() - started,
+      note,
+    },
+    result,
+  };
+}
+
+async function recordExportTelemetry(kind, dealId, result) {
+  if (!dealId) return;
+  await telemetryReady;
+  const deal = dealStore.getDeal(dealId);
+  await telemetryStore.record('export_clicked', {
+    dealId,
+    exportKind: kind,
+    callCount: deal?.calls?.length || 0,
+    actionCount: Array.isArray(result?.actions) ? result.actions.length : 0,
+  });
+}
+
 const server = http.createServer(async (req, res) => {
   const { method } = req;
   const url = new URL(req.url, `http://localhost:${PORT}`);
@@ -156,6 +231,94 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { docs: libraryStore.listDocuments(), maxBytes: MAX_LIBRARY_DOC_BYTES });
     }
 
+    if (method === 'GET' && path === '/api/deals') {
+      await dealsReady;
+      return sendJson(res, 200, { deals: dealStore.listDeals(), summaries: dealStore.listDealSummaries() });
+    }
+
+    if (method === 'POST' && path === '/api/deals') {
+      await dealsReady;
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        return sendJson(res, 400, { error: 'invalid JSON body' });
+      }
+      try {
+        const deal = await dealStore.createDeal(body);
+        return sendJson(res, 200, { deal, deals: dealStore.listDeals(), summaries: dealStore.listDealSummaries() });
+      } catch (error) {
+        if (dealJsonError(res, error)) return;
+        throw error;
+      }
+    }
+
+    if (method === 'GET' && path.startsWith('/api/deals/')) {
+      await dealsReady;
+      const dealId = decodeURIComponent(path.slice('/api/deals/'.length));
+      const deal = dealStore.getDeal(dealId);
+      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
+      return sendJson(res, 200, { deal, view: dealStore.buildView(dealId) });
+    }
+
+    if (method === 'POST' && path.endsWith('/return') && path.startsWith('/api/deals/')) {
+      await dealsReady;
+      await telemetryReady;
+      const dealId = decodeURIComponent(path.slice('/api/deals/'.length, -'/return'.length));
+      const deal = dealStore.getDeal(dealId);
+      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
+      await telemetryStore.record('deal_returned', {
+        dealId,
+        callCount: deal.calls.length,
+      });
+      return sendJson(res, 200, {
+        deal,
+        deals: dealStore.listDeals(),
+        summaries: dealStore.listDealSummaries(),
+        view: dealStore.buildView(dealId),
+      });
+    }
+
+    if (method === 'POST' && path.endsWith('/calls') && path.startsWith('/api/deals/')) {
+      await dealsReady;
+      await telemetryReady;
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        return sendJson(res, 400, { error: 'invalid JSON body' });
+      }
+      const dealId = decodeURIComponent(path.slice('/api/deals/'.length, -'/calls'.length));
+      try {
+        const data = await extractDealResult(body);
+        const deal = await dealStore.addCall(dealId, {
+          transcript: body.transcript,
+          label: body.label,
+          meta: data.meta,
+          result: data.result,
+        });
+        const latestCall = deal.calls[deal.calls.length - 1];
+        await telemetryStore.record('call_processed', {
+          dealId,
+          callId: latestCall?.id || null,
+          callLabel: latestCall?.label || null,
+          callCount: deal.calls.length,
+          engine: data.meta.engine,
+          model: data.meta.model,
+        });
+        return sendJson(res, 200, {
+          deal,
+          deals: dealStore.listDeals(),
+          summaries: dealStore.listDealSummaries(),
+          view: dealStore.buildView(dealId),
+        });
+      } catch (error) {
+        if (String(error?.message || '').includes('transcript is empty')) return sendJson(res, 400, { error: error.message });
+        if (dealJsonError(res, error)) return;
+        throw error;
+      }
+    }
+
     if (method === 'POST' && path === '/api/library') {
       await libraryReady;
       let body;
@@ -182,60 +345,24 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'POST' && path === '/api/extract') {
-      const { transcript = '', useLlm = false } = JSON.parse((await readBody(req)) || '{}');
-      if (!transcript.trim()) return sendJson(res, 400, { error: 'transcript is empty' });
-
-      await libraryReady;
-      const started = Date.now();
-      const libraryIndex = libraryStore.getIndex();
-      const baseResult = analyzeTranscript(transcript, { libraryIndex });
-      let result;
-      let engine = 'deterministic';
-      let model = null;
-      let note = null;
-
-      if (useLlm) {
-        try {
-          const out = await analyzeWithClaude(transcript, { libraryIndex });
-          result = { ...out.result, rfpRows: baseResult.rfpRows };
-          model = out.model;
-          engine = 'claude';
-        } catch (e) {
-          if (!(e instanceof LlmUnavailable)) throw e;
-          note = `Claude path unavailable (${e.message}); used the deterministic engine.`;
-        }
+      let body;
+      try {
+        body = JSON.parse((await readBody(req)) || '{}');
+      } catch {
+        return sendJson(res, 400, { error: 'invalid JSON body' });
       }
-      if (!result) result = baseResult;
-      result = verifyEvidenceGrounding(result, transcript, libraryIndex);
-
-      // ⑤ LLM-as-judge semantic verification (opt-in via useLlm, so the default deterministic
-      // path stays zero-latency): re-checks each 'verified' RFP row against the transcript and
-      // downgrades semantic false-positives the finite regex matcher can't catch. Graceful —
-      // an unavailable/erroring judge leaves the deterministic verdicts untouched.
-      let judged = false;
-      if (useLlm && llmConfigured()) {
-        const before = result.rfpRows.filter((r) => r.status === 'verified').length;
-        await judgeVerifiedRfpRows(result, transcript);
-        const after = result.rfpRows.filter((r) => r.status === 'verified').length;
-        judged = true;
-        if (after < before) note = `${note ? note + ' ' : ''}LLM judge downgraded ${before - after} RFP row(s) on semantic re-check.`;
+      try {
+        return sendJson(res, 200, await extractDealResult(body));
+      } catch (error) {
+        if (String(error?.message || '').includes('transcript is empty')) return sendJson(res, 400, { error: error.message });
+        throw error;
       }
-
-      const meta = {
-        generatedAt: new Date().toISOString(),
-        engine,
-        model,
-        grounded: true,
-        judged,
-        durationMs: Date.now() - started,
-        note,
-      };
-      return sendJson(res, 200, { meta, result });
     }
 
     if (method === 'POST' && path === '/api/export/csv') {
-      const { result } = JSON.parse((await readBody(req)) || '{}');
+      const { result, dealId } = JSON.parse((await readBody(req)) || '{}');
       if (!result) return sendJson(res, 400, { error: 'missing result' });
+      await recordExportTelemetry('csv', dealId, result);
       return send(res, 200, toCsv(result), {
         'Content-Type': 'text/csv; charset=utf-8',
         'Content-Disposition': 'attachment; filename="slipstream-actions.csv"',
@@ -244,7 +371,10 @@ const server = http.createServer(async (req, res) => {
 
     if (method === 'POST' && path === '/api/export/json') {
       const body = JSON.parse((await readBody(req)) || '{}');
-      return send(res, 200, JSON.stringify(body, null, 2), {
+      await recordExportTelemetry('json', body.dealId, body.result);
+      const { dealId, ...exportBody } = body;
+      if (exportBody.head && typeof exportBody.head === 'object') delete exportBody.head.dealId;
+      return send(res, 200, JSON.stringify(exportBody, null, 2), {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Disposition': 'attachment; filename="slipstream-deal.json"',
       });
@@ -254,9 +384,10 @@ const server = http.createServer(async (req, res) => {
       // Integration stub. We intentionally do NOT make an outbound request —
       // instead we return the exact payload and a ready-to-run curl so the user
       // (or a server-side job, later) can deliver it to HubSpot/Salesforce/Slack.
-      const { result, meta = {}, url: target = 'https://example.com/webhook' } =
+      const { result, meta = {}, dealId, url: target = 'https://example.com/webhook' } =
         JSON.parse((await readBody(req)) || '{}');
       if (!result) return sendJson(res, 400, { error: 'missing result' });
+      await recordExportTelemetry('webhook', dealId, result);
       const payload = crmPayload(result, meta);
       const curl =
         `curl -X POST ${target} \\\n  -H 'content-type: application/json' \\\n  -d '` +

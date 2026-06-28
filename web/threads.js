@@ -230,17 +230,18 @@ export function buildThreadView(thread) {
   const latestMeta = latestCall?.meta || {};
   return {
     meta: {
-      engine: 'thread-local',
+      engine: 'saved-workspace',
       model: latestMeta.model || null,
       durationMs: latestMeta.durationMs || 0,
       grounded: true,
       judged: Boolean(latestMeta.judged),
-      note: `${thread.calls.length} saved call${thread.calls.length === 1 ? '' : 's'} merged from local browser storage.`,
+      note: `${thread.calls.length} saved call${thread.calls.length === 1 ? '' : 's'} merged from the local saved deal workspace.`,
     },
     result,
     head: {
+      dealId: thread.id,
       title: thread.title,
-      subtitle: `${thread.calls.length} call${thread.calls.length === 1 ? '' : 's'} · ${thread.account || result.crmFields?.Account || 'local-only thread'}`,
+      subtitle: `${thread.calls.length} call${thread.calls.length === 1 ? '' : 's'} · ${thread.account || result.crmFields?.Account || 'local saved deal'}`,
     },
   };
 }
