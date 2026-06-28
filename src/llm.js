@@ -87,7 +87,8 @@ function runClaudeCli(systemPrompt, userContent) {
  * Run grounded extraction through Claude (API key or CLI). Resolves to
  * { result: ExtractionResult, model }, or throws LlmUnavailable.
  */
-export async function analyzeWithClaude(transcript) {
+export async function analyzeWithClaude(transcript, options = {}) {
+  const libraryIndex = options.libraryIndex ?? null;
   const userMsg = `Transcript (each line prefixed with its 1-based line number):\n\n${numberLines(transcript)}`;
 
   // 1. API key path — official SDK + structured outputs.
@@ -119,7 +120,7 @@ export async function analyzeWithClaude(transcript) {
     let parsed;
     try { parsed = extractJson(text); } catch { throw new LlmUnavailable('could not parse JSON from API response'); }
     // Verify every model-returned citation against the transcript before trusting it (S12).
-    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript), model: DEFAULT_MODEL };
+    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript, libraryIndex), model: DEFAULT_MODEL };
   }
 
   // 2. claude CLI path — uses the host's authed Claude Code OAuth (auto-refreshing).
@@ -135,7 +136,7 @@ export async function analyzeWithClaude(transcript) {
     const text = typeof env.result === 'string' ? env.result : (env.text || '');
     let parsed;
     try { parsed = extractJson(text); } catch { throw new LlmUnavailable('claude CLI: could not parse JSON from result'); }
-    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript), model: `${CLI_MODEL} (claude cli)` };
+    return { result: verifyEvidenceGrounding(normalizeResult(parsed), transcript, libraryIndex), model: `${CLI_MODEL} (claude cli)` };
   }
 
   throw new LlmUnavailable('no ANTHROPIC_API_KEY and the claude CLI is unavailable');

@@ -121,6 +121,8 @@ function preferRfp(existing, incoming) {
   if (!existing) return incoming;
   if (existing.status === 'verified' && incoming.status !== 'verified') return existing;
   if (existing.status !== 'verified' && incoming.status === 'verified') return incoming;
+  if (existing.answerSource === 'call' && incoming.answerSource !== 'call') return existing;
+  if (existing.answerSource !== 'call' && incoming.answerSource === 'call') return incoming;
   return preferEvidence(existing, incoming);
 }
 

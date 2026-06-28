@@ -5,6 +5,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyzeTranscript } from '../src/engine.js';
 import { verifyEvidenceGrounding } from '../src/schema.js';
+import { buildIndex } from '../src/library.js';
 
 // ─── ③ Parser robustness (S19/S23/S28/S15) ───────────────────────────────────
 
@@ -107,6 +108,68 @@ test('verifyEvidenceGrounding nulls hallucinated citations and downgrades forged
     transcript,
   );
   assert.ok(ok.pains[0].evidence, 'a real citation must be preserved');
+});
+
+test('verifyEvidenceGrounding downgrades hallucinated library citations and missing doc metadata', () => {
+  const index = buildIndex([
+    {
+      docId: 'security-faq',
+      docName: 'Security FAQ.md',
+      text: '# Security\nOkta SSO is supported.\nEU data residency is available.\n',
+    },
+  ]);
+
+  const forged = verifyEvidenceGrounding(
+    {
+      rfpRows: [{
+        question: 'q',
+        suggestedAnswer: 'Okta SSO is supported.',
+        status: 'verified',
+        answerSource: 'library',
+        libraryEvidence: {
+          docId: 'security-faq',
+          docName: 'Security FAQ.md',
+          passageId: 'security-faq:1',
+          heading: 'Security',
+          quote: 'This line does not exist',
+          line: 2,
+          score: 4.2,
+        },
+        evidence: { quote: 'We need SSO via Okta', line: 1 },
+      }],
+    },
+    'Maria: We need SSO via Okta',
+    index,
+  );
+  assert.equal(forged.rfpRows[0].status, 'unverified');
+  assert.equal(forged.rfpRows[0].answerSource, 'none');
+  assert.equal(forged.rfpRows[0].libraryEvidence, null);
+  assert.match(forged.rfpRows[0].suggestedAnswer, /\[Draft/);
+
+  const missingMeta = verifyEvidenceGrounding(
+    {
+      rfpRows: [{
+        question: 'q',
+        suggestedAnswer: 'Okta SSO is supported.',
+        status: 'verified',
+        answerSource: 'library',
+        libraryEvidence: {
+          docId: 'security-faq',
+          docName: '',
+          passageId: 'security-faq:1',
+          heading: '',
+          quote: 'Okta SSO is supported.',
+          line: 2,
+          score: 4.2,
+        },
+        evidence: { quote: 'We need SSO via Okta', line: 1 },
+      }],
+    },
+    'Maria: We need SSO via Okta',
+    index,
+  );
+  assert.equal(missingMeta.rfpRows[0].status, 'unverified');
+  assert.equal(missingMeta.rfpRows[0].answerSource, 'none');
 });
 
 // ─── ① Grounding — retraction / conditional (verify-skeptic refutations, loop 2) ──────────

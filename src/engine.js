@@ -1,5 +1,6 @@
 // engine.js — deterministic, zero-dependency transcript extraction engine
-import { emptyResult, normalizeResult, MEDDPICC_DIMENSIONS } from './schema.js';
+import { emptyResult, normalizeResult, MEDDPICC_DIMENSIONS, UNVERIFIED_RFP_DRAFT } from './schema.js';
+import { retrieve } from './library.js';
 
 // ─── Parser ──────────────────────────────────────────────────────────────────
 
@@ -118,9 +119,10 @@ const COMPETITOR_NAMES = [
 
 // ─── Main export ─────────────────────────────────────────────────────────────
 
-export function analyzeTranscript(text) {
+export function analyzeTranscript(text, options = {}) {
   const utterances = parseTranscript(text);
   const result = emptyResult();
+  const libraryIndex = options.libraryIndex ?? null;
 
   // ── Summary ──
   // The seller's own rep (SE): detected by role, else the first speaker. Used to attribute
@@ -349,11 +351,20 @@ export function analyzeTranscript(text) {
     const confirmed = !contestedCategories.has(r.category) && seConfirmClauses.find(
       (c) => c.category === r.category && sharesKeywords(c.text, r.text)
     );
+    const libraryMatch = !contestedCategories.has(r.category) && !confirmed
+      ? retrieve(libraryIndex, `${rfpQuestion(r)}\n${r.text}`, { category: r.category })
+      : null;
     result.rfpRows.push({
       question: rfpQuestion(r),
-      suggestedAnswer: confirmed ? `Confirmed on the call: "${trimText(confirmed.text, 100)}"` : rfpAnswer(r),
-      status: confirmed ? 'verified' : 'unverified',
+      suggestedAnswer: confirmed
+        ? `Confirmed on the call: "${trimText(confirmed.text, 100)}"`
+        : libraryMatch
+          ? libraryMatch.quote
+          : rfpAnswer(r),
+      status: confirmed || libraryMatch ? 'verified' : 'unverified',
       evidence: confirmed ? mkEvidence(confirmed.u) : r.evidence,
+      answerSource: confirmed ? 'call' : libraryMatch ? 'library' : 'none',
+      libraryEvidence: libraryMatch,
     });
   }
 
@@ -592,7 +603,7 @@ function rfpAnswer(_req) {
   // never assert one. Emit a neutral draft for the SE to confirm or mark as a gap. (A
   // "verified" answer is produced only when the transcript itself contains a confirmation —
   // see the rfpRows loop.)
-  return '[Draft — confirm with product]: state how Slipstream meets this requirement, or flag it as a gap.';
+  return UNVERIFIED_RFP_DRAFT;
 }
 
 /** Return true if two strings share at least one significant keyword */
