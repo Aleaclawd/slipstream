@@ -4,11 +4,6 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Slipstream — win the deal between the calls</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -40,6 +35,32 @@
           <div class="thread-history">
             <h3>Call history</h3>
             <div class="call-history" id="callHistory"></div>
+          </div>
+
+          <div class="demo-panel">
+            <div class="dashboard-head">
+              <div>
+                <h3>Private demo pack</h3>
+                <p>Load the anonymized two-call workspace and local docs, or clear the local demo data on this host.</p>
+              </div>
+              <div class="demo-meta" id="demoMeta"></div>
+            </div>
+            <div class="demo-controls">
+              <button id="loadDemoPack" class="ghost sm">Load private demo pack</button>
+              <button id="resetDemoData" class="ghost sm danger">Reset local data</button>
+            </div>
+          </div>
+
+          <div class="dashboard-panel">
+            <div class="dashboard-head">
+              <div>
+                <h3>Local engagement dashboard</h3>
+                <p>Summarized from local-only telemetry: call processing, workspace returns, and exports.</p>
+              </div>
+              <div class="dashboard-meta" id="dashboardMeta"></div>
+            </div>
+            <div class="dashboard-stats" id="dashboardStats"></div>
+            <div class="dashboard-list" id="dashboardList"></div>
           </div>
         </aside>
 
