@@ -24,6 +24,7 @@ import { DealStore, DealStoreError, resetDealStore } from './deal-store.js';
 import { LibraryStore, LibraryStoreError, MAX_LIBRARY_DOC_BYTES, resetLibraryStore } from './store.js';
 import { TelemetryStore, resetTelemetryStore } from './telemetry-store.js';
 import { seedDemoPack } from './demo-pack.js';
+import { buildDealBrief, renderDealBriefHtml, renderDealBriefMarkdown } from '../web/deal-brief.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..');
@@ -73,6 +74,15 @@ function csvCell(v) {
   // Neutralize spreadsheet formula injection (a cell starting with = + - @ tab/CR can execute).
   if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
+function briefFilename(brief, extension) {
+  const stem = String(brief?.title || brief?.account || brief?.dealId || 'slipstream-deal-brief')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64) || 'slipstream-deal-brief';
+  return `${stem}.${extension}`;
 }
 
 function toCsv(result) {
@@ -246,11 +256,21 @@ async function loadDemoPack() {
   });
   return {
     ...seeded,
+    brief: buildDealBrief({ deal: seeded.deal, view: seeded.view, libraryIndex: libraryStore.getIndex() }),
     docs: libraryStore.listDocuments(),
     deals: dealStore.listDeals(),
     summaries: dealStore.listDealSummaries(),
     dashboard: await buildDashboardSummary(),
   };
+}
+
+async function getDealArtifacts(dealId) {
+  await Promise.all([dealsReady, libraryReady]);
+  const deal = dealStore.getDeal(dealId);
+  if (!deal) return null;
+  const view = dealStore.buildView(dealId);
+  const brief = buildDealBrief({ deal, view, libraryIndex: libraryStore.getIndex() });
+  return { deal, view, brief };
 }
 
 const server = http.createServer(async (req, res) => {
@@ -323,28 +343,26 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (method === 'GET' && path.startsWith('/api/deals/')) {
-      await dealsReady;
       const dealId = decodeURIComponent(path.slice('/api/deals/'.length));
-      const deal = dealStore.getDeal(dealId);
-      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
-      return sendJson(res, 200, { deal, view: dealStore.buildView(dealId) });
+      const artifacts = await getDealArtifacts(dealId);
+      if (!artifacts) return sendJson(res, 404, { error: 'deal not found' });
+      return sendJson(res, 200, artifacts);
     }
 
     if (method === 'POST' && path.endsWith('/return') && path.startsWith('/api/deals/')) {
       await dealsReady;
       await telemetryReady;
       const dealId = decodeURIComponent(path.slice('/api/deals/'.length, -'/return'.length));
-      const deal = dealStore.getDeal(dealId);
-      if (!deal) return sendJson(res, 404, { error: 'deal not found' });
+      const artifacts = await getDealArtifacts(dealId);
+      if (!artifacts) return sendJson(res, 404, { error: 'deal not found' });
       await telemetryStore.record('deal_returned', {
         dealId,
-        callCount: deal.calls.length,
+        callCount: artifacts.deal.calls.length,
       });
       return sendJson(res, 200, {
-        deal,
+        ...artifacts,
         deals: dealStore.listDeals(),
         summaries: dealStore.listDealSummaries(),
-        view: dealStore.buildView(dealId),
       });
     }
 
@@ -375,11 +393,14 @@ const server = http.createServer(async (req, res) => {
           engine: data.meta.engine,
           model: data.meta.model,
         });
+        const view = dealStore.buildView(dealId);
+        const brief = buildDealBrief({ deal, view, libraryIndex: libraryStore.getIndex() });
         return sendJson(res, 200, {
           deal,
           deals: dealStore.listDeals(),
           summaries: dealStore.listDealSummaries(),
-          view: dealStore.buildView(dealId),
+          view,
+          brief,
         });
       } catch (error) {
         if (String(error?.message || '').includes('transcript is empty')) return sendJson(res, 400, { error: error.message });
@@ -446,6 +467,32 @@ const server = http.createServer(async (req, res) => {
       return send(res, 200, JSON.stringify(exportBody, null, 2), {
         'Content-Type': 'application/json; charset=utf-8',
         'Content-Disposition': 'attachment; filename="slipstream-deal.json"',
+      });
+    }
+
+    if (method === 'POST' && path === '/api/export/brief/markdown') {
+      const { dealId } = JSON.parse((await readBody(req)) || '{}');
+      if (!dealId) return sendJson(res, 400, { error: 'missing dealId' });
+      const artifacts = await getDealArtifacts(dealId);
+      if (!artifacts) return sendJson(res, 404, { error: 'deal not found' });
+      await recordExportTelemetry('markdown', dealId, artifacts.view?.result);
+      const body = renderDealBriefMarkdown(artifacts.brief);
+      return send(res, 200, body, {
+        'Content-Type': 'text/markdown; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${briefFilename(artifacts.brief, 'md')}"`,
+      });
+    }
+
+    if (method === 'POST' && path === '/api/export/brief/html') {
+      const { dealId } = JSON.parse((await readBody(req)) || '{}');
+      if (!dealId) return sendJson(res, 400, { error: 'missing dealId' });
+      const artifacts = await getDealArtifacts(dealId);
+      if (!artifacts) return sendJson(res, 404, { error: 'deal not found' });
+      await recordExportTelemetry('html', dealId, artifacts.view?.result);
+      const body = renderDealBriefHtml(artifacts.brief);
+      return send(res, 200, body, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Disposition': `attachment; filename="${briefFilename(artifacts.brief, 'html')}"`,
       });
     }
 

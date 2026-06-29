@@ -2,6 +2,7 @@
 // API calls are RELATIVE to the page URL so the app works at the domain root and
 // behind a path prefix (e.g. studio.apit.fun/slipstream/).
 import { dealGaugeSVG, meddpiccBarsSVG, riskRadarSVG, mindMapSVG } from './views.js';
+import { renderDealBriefPacket } from './deal-brief.js';
 import {
   buildThreadView,
   getThreadById,
@@ -11,7 +12,7 @@ import {
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-let last = null; // { meta, result, head? }
+let last = null; // { meta, result, head?, brief? }
 let activeTab = 'brief';
 let threads = [];
 let currentThreadId = null;
@@ -36,6 +37,8 @@ function emptyDashboardSummary() {
     exportsByKind: {
       csv: 0,
       json: 0,
+      markdown: 0,
+      html: 0,
       webhook: 0,
     },
     latestEventAt: null,
@@ -129,7 +132,7 @@ function eventSummary(event) {
 function renderDashboard() {
   const summary = dashboardSummary || emptyDashboardSummary();
   const totals = summary.totals || emptyDashboardSummary().totals;
-  const exportsByKind = summary.exportsByKind || emptyDashboardSummary().exportsByKind;
+  const exportsByKind = { ...emptyDashboardSummary().exportsByKind, ...(summary.exportsByKind || {}) };
   const deals = Array.isArray(summary.deals) ? summary.deals : [];
   const recentEvents = Array.isArray(summary.recentEvents) ? summary.recentEvents : [];
   $('dashboardMeta').textContent = summary.latestEventAt
@@ -138,7 +141,11 @@ function renderDashboard() {
   $('dashboardStats').innerHTML = [
     dashboardStat('Calls processed', totals.callProcessed, `${totals.totalEvents} tracked event${totals.totalEvents === 1 ? '' : 's'}`),
     dashboardStat('Workspace returns', totals.dealReturned, `${deals.length} active deal${deals.length === 1 ? '' : 's'}`),
-    dashboardStat('Exports', totals.exportClicked, `CSV ${exportsByKind.csv} · JSON ${exportsByKind.json} · Webhook ${exportsByKind.webhook}`),
+    dashboardStat(
+      'Exports',
+      totals.exportClicked,
+      `CSV ${exportsByKind.csv} · JSON ${exportsByKind.json} · MD ${exportsByKind.markdown} · HTML ${exportsByKind.html} · Webhook ${exportsByKind.webhook}`,
+    ),
   ].join('');
 
   if (!deals.length && !recentEvents.length) {
@@ -248,6 +255,7 @@ async function showThread(threadId, options = {}) {
     last = null;
     currentViewDealId = null;
     $('output').hidden = true;
+    $('briefExports').hidden = true;
     setMetaBusy(`Loaded ${thread.title}. Paste the next call and click “Add call to deal”.`);
     return;
   }
@@ -261,7 +269,7 @@ async function showThread(threadId, options = {}) {
     if (!res.ok) throw new Error(data.error || 'deal load failed');
     threads = Array.isArray(data.deals) ? data.deals : threads;
     renderThreadSidebar();
-    render(data.view);
+    render({ ...data.view, brief: data.brief || null });
     await refreshDashboard();
   } catch (error) {
     setMetaError(error.message);
@@ -319,6 +327,10 @@ function renderBrief(r) {
   const kv = Object.entries(r.crmFields || {});
   if (kv.length) cards.push(card('CRM-ready fields', null, `<dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`));
   return `<div class="cards">${cards.join('')}</div>`;
+}
+
+function renderDealBrief(brief) {
+  return renderDealBriefPacket(brief);
 }
 
 function renderScorecard(r) {
@@ -401,7 +413,7 @@ function renderTab() {
   if (!last) return;
   const r = last.result;
   const v = $('view');
-  if (activeTab === 'brief') v.innerHTML = renderBrief(r);
+  if (activeTab === 'brief') v.innerHTML = last.brief ? renderDealBrief(last.brief) : renderBrief(r);
   else if (activeTab === 'mindmap') v.innerHTML = `<div class="mindmap-wrap"><div class="chart">${mindMapSVG(r)}</div></div>`;
   else if (activeTab === 'kanban') { v.innerHTML = renderKanban(r); wireKanban(); }
   else if (activeTab === 'steps') v.innerHTML = renderSteps(r);
@@ -416,6 +428,7 @@ function render(data) {
   last = data;
   currentViewDealId = data.head?.dealId || null;
   const r = data.result;
+  $('briefExports').hidden = !data.brief;
   $('dealName').textContent = data.head?.title || r.summary.dealName || 'Deal';
   $('oneLiner').textContent = data.head?.subtitle || r.summary.oneLiner || '';
   $('tabs').innerHTML = TABS.map(([id, label]) => `<button class="tab${id === activeTab ? ' active' : ''}" data-tab="${id}" role="tab">${esc(label)}</button>`).join('');
@@ -484,7 +497,7 @@ async function appendThreadCall() {
     threads = Array.isArray(data.deals) ? data.deals : threads;
     currentThreadId = data.deal?.id || currentThreadId;
     renderThreadSidebar();
-    render(data.view);
+    render({ ...data.view, brief: data.brief || null });
     $('transcript').value = '';
     await refreshDashboard();
   } catch (e) {
@@ -568,7 +581,7 @@ async function loadDemoPack() {
     renderLibraryList();
     renderThreadSidebar();
     renderDashboard();
-    if (data.view) render(data.view);
+    if (data.view) render({ ...data.view, brief: data.brief || null });
     $('transcript').value = '';
     setDemoMeta('loaded locally');
     setLibraryMeta(`${libraryDocs.length} doc${libraryDocs.length === 1 ? '' : 's'} loaded`);
@@ -591,6 +604,7 @@ async function resetDemoData() {
     last = null;
     $('transcript').value = '';
     $('output').hidden = true;
+    $('briefExports').hidden = true;
     renderLibraryList();
     renderThreadSidebar();
     renderDashboard();
@@ -637,6 +651,62 @@ async function doExport(kind) {
   await refreshDashboard();
 }
 
+function fallbackCopy(text) {
+  const node = document.createElement('textarea');
+  node.value = text;
+  node.setAttribute('readonly', 'readonly');
+  node.style.position = 'fixed';
+  node.style.top = '-999px';
+  document.body.appendChild(node);
+  node.select();
+  document.execCommand('copy');
+  document.body.removeChild(node);
+}
+
+async function fetchBriefExport(kind) {
+  if (!currentViewDealId) throw new Error('brief exports require a saved deal workspace');
+  const res = await fetch(`api/export/brief/${kind}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dealId: currentViewDealId }),
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || 'brief export failed');
+  }
+  return res;
+}
+
+async function copyDealBrief() {
+  try {
+    const res = await fetchBriefExport('markdown');
+    const text = await res.text();
+    if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+    else fallbackCopy(text);
+    setMetaBusy('Champion evidence packet copied as markdown.');
+    await refreshDashboard();
+  } catch (error) {
+    setMetaError(error.message || 'copy failed');
+  }
+}
+
+async function downloadBrief(kind) {
+  try {
+    const res = await fetchBriefExport(kind);
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') || '';
+    const fileName = disposition.match(/filename="([^"]+)"/)?.[1] || `slipstream-deal-brief.${kind === 'markdown' ? 'md' : 'html'}`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    await refreshDashboard();
+  } catch (error) {
+    setMetaError(error.message || 'brief export failed');
+  }
+}
+
 // ============================ wiring ============================
 $('analyze').addEventListener('click', analyze);
 $('appendThreadCall').addEventListener('click', appendThreadCall);
@@ -665,6 +735,8 @@ $('libraryList').addEventListener('click', (e) => {
 });
 $('tabs').addEventListener('click', (e) => { const t = e.target.closest('.tab'); if (!t) return; activeTab = t.dataset.tab; renderTab(); });
 document.querySelectorAll('[data-export]').forEach((b) => b.addEventListener('click', () => doExport(b.dataset.export)));
+document.querySelectorAll('[data-brief-export]').forEach((b) => b.addEventListener('click', () => downloadBrief(b.dataset.briefExport)));
+$('copyDealBrief').addEventListener('click', copyDealBrief);
 $('modalClose').addEventListener('click', () => ($('modal').hidden = true));
 $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('modal').hidden = true; });
 
@@ -681,4 +753,4 @@ $('modal').addEventListener('click', (e) => { if (e.target.id === 'modal') $('mo
 })();
 
 // Exported for Node render tests (ignored by the browser module loader).
-export { renderBrief, renderScorecard, renderRisks, renderSteps, renderKanban, renderStakeholders, renderBattlecards };
+export { renderBrief, renderDealBrief, renderScorecard, renderRisks, renderSteps, renderKanban, renderStakeholders, renderBattlecards };
