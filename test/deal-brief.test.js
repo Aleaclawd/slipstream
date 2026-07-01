@@ -138,6 +138,82 @@ test('deal brief keeps historical commercial and open questions after a later te
   assert.ok(brief.nextQuestions.some((item) => /lock the next step/i.test(item.question) && /Discovery call/.test(item.transcriptEvidence?.label || '')));
 });
 
+test('deal brief dedupes repeated historical blockers and keeps the newest citation', () => {
+  const baseResult = {
+    summary: { dealName: 'Acme', oneLiner: 'Synthetic repeated blocker regression test' },
+    pains: [],
+    objections: [],
+    competitors: [],
+    actions: [],
+    followupEmail: { subject: '', body: '' },
+    demoPrep: [],
+    rfpRows: [],
+    crmFields: { EconomicBuyer: 'Lena' },
+    dealHealth: { score: 0, dimensions: [] },
+    risks: [],
+    nextBestActions: [],
+    battlecards: [],
+  };
+
+  let deal = createThreadRecord(
+    { title: 'Acme renewal', account: 'Acme' },
+    { now: () => '2026-06-18T15:00:00.000Z' },
+  );
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need ROI proof and the pricing package.',
+    label: 'Discovery call',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need ROI proof and the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need ROI proof and the pricing package before procurement starts', evidence: { quote: 'Before procurement starts, I need ROI proof and the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-18T15:05:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Pat (VP Engineering, Acme): The POC needs BigQuery write-back live before we sign off.',
+    label: 'Technical follow-up',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Pat', role: 'VP Engineering', evidence: { quote: 'The POC needs BigQuery write-back live before we sign off.', line: 1, speaker: 'Pat', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'integration', text: 'Need BigQuery write-back live before sign-off', evidence: { quote: 'The POC needs BigQuery write-back live before we sign off.', line: 1, speaker: 'Pat', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Pat', role: 'VP Engineering', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-20T16:15:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before legal can open procurement, I need the commercial justification deck and exact pricing.',
+    label: 'Commercial restatement',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before legal can open procurement, I need the commercial justification deck and exact pricing.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need the commercial justification deck and exact pricing before legal can open procurement', evidence: { quote: 'Before legal can open procurement, I need the commercial justification deck and exact pricing.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-22T10:00:00.000Z' });
+
+  const brief = buildDealBrief({ deal, generatedAt: '2026-06-22T10:30:00.000Z' });
+  const lenaGaps = brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaCommercialItems = lenaGaps?.items.filter((item) => item.category === 'commercial') || [];
+
+  assert.equal(lenaCommercialItems.length, 1, 'same stakeholder blocker should collapse to one commercial gap');
+  assert.match(lenaCommercialItems[0]?.title || '', /commercial justification deck and exact pricing/i);
+  assert.equal(lenaCommercialItems[0]?.transcriptEvidence?.callLabel, 'Commercial restatement');
+});
+
 test('deal brief dedupes repeated historical blocker restatements and keeps the freshest citation', () => {
   const baseResult = {
     summary: { dealName: 'Acme', oneLiner: 'Synthetic repeated blocker regression' },
@@ -216,4 +292,122 @@ test('deal brief dedupes repeated historical blocker restatements and keeps the 
   assert.equal(lenaQuestions.length, 1, 'repeated blocker should only yield one next question');
   assert.equal(lenaQuestions[0].transcriptEvidence?.label, 'Call 3 · line 1');
   assert.ok(!brief.recentChanges.some((item) => /pricing package and roi proof/i.test(item.title)), 'restated blocker should not be treated as a net-new change');
+});
+
+test('deal brief keeps distinct commercial blockers that only share pricing and procurement context', () => {
+  const baseResult = {
+    summary: { dealName: 'Acme', oneLiner: 'Synthetic distinct commercial blocker regression' },
+    pains: [],
+    objections: [],
+    competitors: [],
+    actions: [],
+    followupEmail: { subject: '', body: '' },
+    demoPrep: [],
+    rfpRows: [],
+    crmFields: { EconomicBuyer: 'Lena' },
+    dealHealth: { score: 0, dimensions: [] },
+    risks: [],
+    nextBestActions: [],
+    battlecards: [],
+  };
+
+  let deal = createThreadRecord(
+    { title: 'Acme renewal', account: 'Acme' },
+    { now: () => '2026-06-18T15:00:00.000Z' },
+  );
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need pricing package and ROI proof.',
+    label: 'Call 1',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need pricing package and ROI proof.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need pricing package and ROI proof before procurement starts', evidence: { quote: 'Before procurement starts, I need pricing package and ROI proof.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-18T15:05:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need pricing redlines and legal terms.',
+    label: 'Call 2',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need pricing redlines and legal terms.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need pricing redlines and legal terms before procurement starts', evidence: { quote: 'Before procurement starts, I need pricing redlines and legal terms.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-20T15:05:00.000Z' });
+
+  const brief = buildDealBrief({ deal, generatedAt: '2026-06-20T16:30:00.000Z' });
+  const lenaGaps = brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaCommercialItems = lenaGaps?.items.filter((item) => item.category === 'commercial') || [];
+
+  assert.equal(lenaCommercialItems.length, 2, 'distinct commercial blockers should both remain visible');
+  assert.ok(lenaCommercialItems.some((item) => /pricing package and roi proof/i.test(item.title)));
+  assert.ok(lenaCommercialItems.some((item) => /pricing redlines and legal terms/i.test(item.title)));
+});
+
+test('deal brief keeps one-token commercial expansions in recent changes', () => {
+  const baseResult = {
+    summary: { dealName: 'Acme', oneLiner: 'Synthetic recent commercial change regression' },
+    pains: [],
+    objections: [],
+    competitors: [],
+    actions: [],
+    followupEmail: { subject: '', body: '' },
+    demoPrep: [],
+    rfpRows: [],
+    crmFields: { EconomicBuyer: 'Lena' },
+    dealHealth: { score: 0, dimensions: [] },
+    risks: [],
+    nextBestActions: [],
+    battlecards: [],
+  };
+
+  let deal = createThreadRecord(
+    { title: 'Acme renewal', account: 'Acme' },
+    { now: () => '2026-06-18T15:00:00.000Z' },
+  );
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need the pricing package.',
+    label: 'Call 1',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need pricing package before procurement starts', evidence: { quote: 'Before procurement starts, I need the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-18T15:05:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need the pricing package discount.',
+    label: 'Call 2',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need the pricing package discount.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need pricing package discount before procurement starts', evidence: { quote: 'Before procurement starts, I need the pricing package discount.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-20T15:05:00.000Z' });
+
+  const brief = buildDealBrief({ deal, generatedAt: '2026-06-20T16:30:00.000Z' });
+
+  assert.ok(brief.recentChanges.some((item) => /pricing package discount/i.test(item.title)), 'latest one-token expansion should remain a visible change');
 });
