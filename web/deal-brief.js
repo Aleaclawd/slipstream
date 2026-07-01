@@ -40,27 +40,20 @@ function tokenize(value) {
     .filter((token) => token.length >= 2 && !BRIEF_STOP.has(token));
 }
 
-function sharedTokenCount(left, right) {
-  const rightSet = new Set(tokenize(right));
-  let count = 0;
-  for (const token of new Set(tokenize(left))) {
-    if (rightSet.has(token)) count++;
-  }
-  return count;
+function requirementCore(value) {
+  const normalized = singleLine(value)
+    .replace(/^(?:before|after|once|when|while|if|until|unless)\b[^,]*,\s*/i, '')
+    .replace(/^(?:please\s+confirm:\s*)/i, '')
+    .replace(/^(?:can|could|would)\s+you\s+confirm(?:\s+whether)?\s+/i, '')
+    .replace(/^(?:i|we)\s+need\s+/i, '')
+    .trim();
+  const contextualTail = normalized.split(/\b(?:before|after|once|when|while|if|until|unless)\b/i)[0];
+  return singleLine(contextualTail || normalized);
 }
 
-function phrasesSimilar(left, right) {
-  const a = normalizeKey(left);
-  const b = normalizeKey(right);
-  if (!a || !b) return false;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
-  const overlap = sharedTokenCount(a, b);
-  return overlap >= 2;
-}
-
-function novelTokenCount(left, right) {
-  const rightSet = new Set(tokenize(right));
-  return [...new Set(tokenize(left))].filter((token) => !rightSet.has(token)).length;
+function requirementIdentity(value) {
+  const tokens = [...new Set(tokenize(requirementCore(value)))].sort();
+  return tokens.join('|') || normalizeKey(requirementCore(value));
 }
 
 function scoreAction(item) {
@@ -343,8 +336,7 @@ function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
   for (const requirement of latest.requirements || []) {
     const matchesPrior = priorRequirements.some((item) =>
       item.category === requirement.category &&
-      phrasesSimilar(item.text, requirement.text) &&
-      novelTokenCount(requirement.text, item.text) < 2
+      requirementIdentity(item.text) === requirementIdentity(requirement.text)
     );
     if (matchesPrior) continue;
     const evidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
@@ -362,7 +354,60 @@ function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
   return dedupeBy(changes, (item) => `${normalizeKey(item.title)}|${normalizeKey(item.detail)}`).slice(0, 6);
 }
 
-function buildStakeholderGaps({ aggregate, latestCall, stakeholders, callsById, libraryIndex }) {
+function requirementGapDetail(category) {
+  return category === 'commercial'
+    ? 'Commercial approval details still need an exact pricing / ROI close plan.'
+    : 'The prospect asked a next-step question that still needs a concrete answer.';
+}
+
+function compareStakeholderGapItems(left, right) {
+  const freshnessGap = latestEvidenceValue(right.transcriptEvidence) - latestEvidenceValue(left.transcriptEvidence);
+  if (freshnessGap) return freshnessGap;
+  const categoryGap = (GAP_CATEGORY_ORDER[left.category] ?? 9) - (GAP_CATEGORY_ORDER[right.category] ?? 9);
+  if (categoryGap) return categoryGap;
+  return normalizeKey(left.title).localeCompare(normalizeKey(right.title));
+}
+
+function stakeholderGapItemsMatch(left, right) {
+  if (normalizeKey(left.stakeholderName) !== normalizeKey(right.stakeholderName)) return false;
+  if (normalizeKey(left.stakeholderRole) !== normalizeKey(right.stakeholderRole)) return false;
+  if (normalizeKey(left.category) !== normalizeKey(right.category)) return false;
+  return requirementIdentity(left.title) === requirementIdentity(right.title);
+}
+
+function dedupeStakeholderGapItems(items) {
+  const deduped = [];
+  for (const item of [...items].sort(compareStakeholderGapItems)) {
+    if (deduped.some((candidate) => stakeholderGapItemsMatch(candidate, item))) continue;
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function buildHistoricalRequirementGapItems({ calls, stakeholders, callsById, crmFields }) {
+  const items = [];
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const call = calls[index];
+    for (const requirement of call?.result?.requirements || []) {
+      if (!['commercial', 'open_question'].includes(requirement.category)) continue;
+      const transcriptEvidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, call), callsById);
+      const group = stakeholderGroupMeta(stakeholders, transcriptEvidence?.speaker || requirement.evidence?.speaker, '', crmFields);
+      items.push({
+        stakeholderName: group.name,
+        stakeholderRole: group.role,
+        stakeholderBadges: group.badges,
+        category: requirement.category,
+        title: requirement.text,
+        detail: requirementGapDetail(requirement.category),
+        transcriptEvidence,
+        libraryEvidence: null,
+      });
+    }
+  }
+  return dedupeStakeholderGapItems(items);
+}
+
+function buildStakeholderGaps({ aggregate, calls, stakeholders, callsById, libraryIndex }) {
   const items = [];
 
   for (const row of aggregate.rfpRows || []) {
@@ -382,23 +427,12 @@ function buildStakeholderGaps({ aggregate, latestCall, stakeholders, callsById, 
     });
   }
 
-  for (const requirement of latestCall?.result?.requirements || []) {
-    if (!['commercial', 'open_question'].includes(requirement.category)) continue;
-    const transcriptEvidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
-    const group = stakeholderGroupMeta(stakeholders, transcriptEvidence?.speaker || requirement.evidence?.speaker, '', aggregate.crmFields);
-    items.push({
-      stakeholderName: group.name,
-      stakeholderRole: group.role,
-      stakeholderBadges: group.badges,
-      category: requirement.category,
-      title: requirement.text,
-      detail: requirement.category === 'commercial'
-        ? 'Commercial approval details still need an exact pricing / ROI close plan.'
-        : 'The prospect asked a next-step question that still needs a concrete answer.',
-      transcriptEvidence,
-      libraryEvidence: null,
-    });
-  }
+  items.push(...buildHistoricalRequirementGapItems({
+    calls,
+    stakeholders,
+    callsById,
+    crmFields: aggregate.crmFields,
+  }));
 
   const groups = new Map();
   for (const item of items) {
@@ -416,18 +450,13 @@ function buildStakeholderGaps({ aggregate, latestCall, stakeholders, callsById, 
   return [...groups.values()]
     .map((group) => ({
       ...group,
-      items: dedupeBy(group.items, (item) => `${normalizeKey(item.title)}|${normalizeKey(item.category)}`)
-        .sort((left, right) => {
-          const categoryGap = (GAP_CATEGORY_ORDER[left.category] ?? 9) - (GAP_CATEGORY_ORDER[right.category] ?? 9);
-          if (categoryGap) return categoryGap;
-          return latestEvidenceValue(right.transcriptEvidence) - latestEvidenceValue(left.transcriptEvidence);
-        }),
+      items: dedupeStakeholderGapItems(group.items),
     }))
     .sort((left, right) => {
-      const badgeGap = right.badges.length - left.badges.length;
-      if (badgeGap) return badgeGap;
       const freshnessGap = latestEvidenceValue(right.items[0]?.transcriptEvidence) - latestEvidenceValue(left.items[0]?.transcriptEvidence);
       if (freshnessGap) return freshnessGap;
+      const badgeGap = right.badges.length - left.badges.length;
+      if (badgeGap) return badgeGap;
       return normalizeKey(left.name).localeCompare(normalizeKey(right.name));
     });
 }
@@ -600,7 +629,7 @@ export function buildDealBrief({ deal, view = null, libraryIndex = null, generat
   const recentChanges = buildRecentChanges({ deal, latestCall, priorAggregate, callsById });
   const stakeholderGaps = buildStakeholderGaps({
     aggregate,
-    latestCall,
+    calls,
     stakeholders,
     callsById,
     libraryIndex,
