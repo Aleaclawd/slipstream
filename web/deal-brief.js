@@ -13,6 +13,12 @@ const BRIEF_STOP = new Set([
   'flag', 'confirm', 'product', 'gap', 'draft', 'please', 'question', 'security', 'compliance', 'we',
   'integration', 'scale', 'performance', 'follow', 'call',
 ]);
+const GAP_TOKEN_STOP = new Set([
+  ...BRIEF_STOP,
+  'in', 'of', 'before', 'after', 'included', 'including', 'exact', 'open', 'opens', 'start', 'starts',
+  'part', 'whether', 'still', 'needs', 'proof', 'answer', 'answers', 'clarity', 'show', 'move', 'forward',
+  'included', 'include', 'included', 'help',
+]);
 
 function escHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (char) => ({
@@ -54,6 +60,62 @@ function requirementCore(value) {
 function requirementIdentity(value) {
   const tokens = [...new Set(tokenize(requirementCore(value)))].sort();
   return tokens.join('|') || normalizeKey(requirementCore(value));
+}
+
+function sharedTokenCount(left, right) {
+  const rightSet = new Set(tokenize(right));
+  let count = 0;
+  for (const token of new Set(tokenize(left))) {
+    if (rightSet.has(token)) count++;
+  }
+  return count;
+}
+
+function phrasesSimilar(left, right) {
+  const a = normalizeKey(left);
+  const b = normalizeKey(right);
+  if (!a || !b) return false;
+  if (a === b || a.includes(b) || b.includes(a)) return true;
+  const overlap = sharedTokenCount(a, b);
+  return overlap >= 2;
+}
+
+function novelTokenCount(left, right) {
+  const rightSet = new Set(tokenize(right));
+  return [...new Set(tokenize(left))].filter((token) => !rightSet.has(token)).length;
+}
+
+function canonicalGapToken(token, category) {
+  if (category === 'commercial') {
+    if (/^pric(?:e|ing|ed)?$/.test(token) || token === 'commercial' || token === 'package') return 'pricing';
+    if (token === 'roi' || token === 'justification') return 'roi';
+    if (token === 'procurement' || token === 'legal' || token === 'contract' || token === 'contracts') return 'procurement';
+  }
+  if (token === 'poc') return 'pilot';
+  return token;
+}
+
+function gapRequirementTokens(item) {
+  const category = normalizeKey(item?.category);
+  const raw = `${item?.title || ''} ${item?.transcriptEvidence?.quote || ''}`;
+  const tokens = [];
+  const seen = new Set();
+  for (const token of normalizeKey(raw).match(/[a-z0-9]+/g) || []) {
+    const canonical = canonicalGapToken(token, category);
+    if (!canonical || canonical.length < 2 || GAP_TOKEN_STOP.has(canonical) || seen.has(canonical)) continue;
+    seen.add(canonical);
+    tokens.push(canonical);
+  }
+  return tokens;
+}
+
+function gapRequirementSharedTokenCount(left, right) {
+  const rightSet = new Set(gapRequirementTokens(right));
+  let count = 0;
+  for (const token of gapRequirementTokens(left)) {
+    if (rightSet.has(token)) count++;
+  }
+  return count;
 }
 
 function scoreAction(item) {
@@ -336,7 +398,13 @@ function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
   for (const requirement of latest.requirements || []) {
     const matchesPrior = priorRequirements.some((item) =>
       item.category === requirement.category &&
-      requirementIdentity(item.text) === requirementIdentity(requirement.text)
+      (
+        requirementIdentity(item.text) === requirementIdentity(requirement.text) ||
+        (
+          phrasesSimilar(item.text, requirement.text) &&
+          novelTokenCount(requirement.text, item.text) < 2
+        )
+      )
     );
     if (matchesPrior) continue;
     const evidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
@@ -372,7 +440,15 @@ function stakeholderGapItemsMatch(left, right) {
   if (normalizeKey(left.stakeholderName) !== normalizeKey(right.stakeholderName)) return false;
   if (normalizeKey(left.stakeholderRole) !== normalizeKey(right.stakeholderRole)) return false;
   if (normalizeKey(left.category) !== normalizeKey(right.category)) return false;
-  return requirementIdentity(left.title) === requirementIdentity(right.title);
+  if (requirementIdentity(left.title) === requirementIdentity(right.title)) return true;
+  if (gapRequirementSharedTokenCount(left, right) >= 2) return true;
+  const leftTitle = normalizeKey(left.title);
+  const rightTitle = normalizeKey(right.title);
+  return Boolean(leftTitle && rightTitle && (
+    leftTitle === rightTitle ||
+    leftTitle.includes(rightTitle) ||
+    rightTitle.includes(leftTitle)
+  ));
 }
 
 function dedupeStakeholderGapItems(items) {

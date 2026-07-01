@@ -15,10 +15,21 @@ const regressionCallTwo = [
   '[00:18] Pat (VP Engineering, Acme): The POC needs BigQuery write-back live before we sign off.',
 ].join('\n');
 
-let serverInstanceId = 0;
+const regressionCallThree = [
+  '[00:00] Priya (SE, Slipstream): We can cover the commercial close items before legal starts.',
+  '[00:12] Lena (CFO, Acme): Before legal can open procurement, I need the commercial justification deck and exact pricing.',
+].join('\n');
 
-async function startFreshServer() {
-  const { server } = await import(`../src/server.js?instance=${serverInstanceId += 1}`);
+const regressionCallFour = [
+  '[00:00] Priya (SE, Slipstream): Let me line up the legal follow-up.',
+  '[00:12] Lena (CFO, Acme): I need the pricing package and ROI proof before legal approves.',
+].join('\n');
+
+let serverImportCounter = 0;
+
+async function startServer(t) {
+  const { server } = await import(`../src/server.js?server-deals-history=${serverImportCounter++}`);
+  t.after(async () => new Promise((resolve) => server.close(resolve)));
   if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
   return server;
 }
@@ -37,8 +48,7 @@ test('saved deal API keeps historical commercial and open-question blockers afte
   process.env.PORT = '0';
   process.env.HOST = '127.0.0.1';
 
-  const server = await startFreshServer();
-  t.after(async () => new Promise((resolve) => server.close(resolve)));
+  const server = await startServer(t);
 
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -78,6 +88,55 @@ test('saved deal API keeps historical commercial and open-question blockers afte
   assert.ok(data.brief.nextQuestions.some((item) => /lock the next step/i.test(item.question)));
 });
 
+test('saved deal API dedupes repeated historical blockers and keeps the newest citation', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-repeat-'));
+  const dealsDir = join(root, 'deals');
+  const telemetryDir = join(root, 'telemetry');
+  const libraryDir = join(root, 'library');
+
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  process.env.SLIPSTREAM_DEALS_DIR = dealsDir;
+  process.env.SLIPSTREAM_TELEMETRY_DIR = telemetryDir;
+  process.env.SLIPSTREAM_DATA_DIR = libraryDir;
+  process.env.PORT = '0';
+  process.env.HOST = '127.0.0.1';
+
+  const server = await startServer(t);
+
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  let res = await fetch(`${base}/api/deals`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Acme renewal' }),
+  });
+  let data = await res.json();
+  assert.equal(res.status, 200);
+  const dealId = data.deal.id;
+
+  for (const [label, transcript] of [
+    ['Discovery call', regressionCallOne],
+    ['Technical follow-up', regressionCallTwo],
+    ['Commercial restatement', regressionCallThree],
+  ]) {
+    res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, useLlm: false, label }),
+    });
+    data = await res.json();
+    assert.equal(res.status, 200);
+  }
+
+  const lenaGaps = data.brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaCommercialItems = lenaGaps?.items.filter((item) => item.category === 'commercial') || [];
+
+  assert.equal(lenaCommercialItems.length, 1, 'same stakeholder blocker should collapse to one commercial gap');
+  assert.match(lenaCommercialItems[0]?.title || '', /commercial justification deck and exact pricing/i);
+  assert.equal(lenaCommercialItems[0]?.transcriptEvidence?.callLabel, 'Commercial restatement');
+});
+
 test('saved deal API dedupes repeated historical blocker restatements and keeps the newest call citation', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-dedupe-'));
   const dealsDir = join(root, 'deals');
@@ -92,14 +151,9 @@ test('saved deal API dedupes repeated historical blocker restatements and keeps 
   process.env.PORT = '0';
   process.env.HOST = '127.0.0.1';
 
-  const server = await startFreshServer();
-  t.after(async () => new Promise((resolve) => server.close(resolve)));
+  const server = await startServer(t);
 
   const base = `http://127.0.0.1:${server.address().port}`;
-  const callThree = [
-    '[00:00] Priya (SE, Slipstream): Let me line up the legal follow-up.',
-    '[00:12] Lena (CFO, Acme): I need the pricing package and ROI proof before legal approves.',
-  ].join('\n');
 
   let res = await fetch(`${base}/api/deals`, {
     method: 'POST',
@@ -110,29 +164,19 @@ test('saved deal API dedupes repeated historical blocker restatements and keeps 
   assert.equal(res.status, 200);
   const dealId = data.deal.id;
 
-  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ transcript: regressionCallOne, useLlm: false, label: 'Call 1' }),
-  });
-  data = await res.json();
-  assert.equal(res.status, 200);
-
-  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ transcript: regressionCallTwo, useLlm: false, label: 'Call 2' }),
-  });
-  data = await res.json();
-  assert.equal(res.status, 200);
-
-  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ transcript: callThree, useLlm: false, label: 'Call 3' }),
-  });
-  data = await res.json();
-  assert.equal(res.status, 200);
+  for (const [label, transcript] of [
+    ['Call 1', regressionCallOne],
+    ['Call 2', regressionCallTwo],
+    ['Call 3', regressionCallFour],
+  ]) {
+    res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, useLlm: false, label }),
+    });
+    data = await res.json();
+    assert.equal(res.status, 200);
+  }
 
   const lenaGaps = data.brief.stakeholderGaps.find((group) => group.name === 'Lena');
   const lenaQuestions = data.brief.nextQuestions.filter((item) => item.stakeholder === 'Lena');
