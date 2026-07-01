@@ -89,6 +89,9 @@ test('saved deal API persists calls across reload and logs local telemetry event
   assert.equal(data.deal.calls.length, 2);
   assert.equal(data.deal.calls[1].label, 'Follow-up call');
   assert.ok(data.brief);
+  assert.equal(data.brief.topAction.title, 'Send the completed questionnaire and pricing by Friday');
+  assert.ok(data.brief.recentChanges.some((item) => /BigQuery/i.test(item.title)));
+  assert.ok(data.brief.nextQuestions.some((item) => /ROI proof/i.test(item.question)));
   assert.ok(data.brief.verifiedRequirements.length >= 1);
 
   const reloadedStore = await new DealStore(dealsDir).init();
@@ -131,6 +134,8 @@ test('saved deal API persists calls across reload and logs local telemetry event
   const markdown = await res.text();
   assert.equal(res.status, 200);
   assert.match(markdown, /# Northwind expansion/);
+  assert.match(markdown, /## Changed since the prior call/);
+  assert.match(markdown, /## Suggested next questions/);
   assert.match(markdown, /\(#brief-transcript-/);
   assert.match(markdown, /brief-library-/);
 
@@ -141,7 +146,8 @@ test('saved deal API persists calls across reload and logs local telemetry event
   });
   const html = await res.text();
   assert.equal(res.status, 200);
-  assert.match(html, /Champion evidence packet/);
+  assert.match(html, /Next-call prep brief/);
+  assert.match(html, /Open gaps by stakeholder/);
   assert.match(html, /href="#brief-transcript-/);
   assert.match(html, /href="#brief-library-/);
 
