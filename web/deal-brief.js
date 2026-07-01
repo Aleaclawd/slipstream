@@ -40,27 +40,20 @@ function tokenize(value) {
     .filter((token) => token.length >= 2 && !BRIEF_STOP.has(token));
 }
 
-function sharedTokenCount(left, right) {
-  const rightSet = new Set(tokenize(right));
-  let count = 0;
-  for (const token of new Set(tokenize(left))) {
-    if (rightSet.has(token)) count++;
-  }
-  return count;
+function requirementCore(value) {
+  const normalized = singleLine(value)
+    .replace(/^(?:before|after|once|when|while|if|until|unless)\b[^,]*,\s*/i, '')
+    .replace(/^(?:please\s+confirm:\s*)/i, '')
+    .replace(/^(?:can|could|would)\s+you\s+confirm(?:\s+whether)?\s+/i, '')
+    .replace(/^(?:i|we)\s+need\s+/i, '')
+    .trim();
+  const contextualTail = normalized.split(/\b(?:before|after|once|when|while|if|until|unless)\b/i)[0];
+  return singleLine(contextualTail || normalized);
 }
 
-function phrasesSimilar(left, right) {
-  const a = normalizeKey(left);
-  const b = normalizeKey(right);
-  if (!a || !b) return false;
-  if (a === b || a.includes(b) || b.includes(a)) return true;
-  const overlap = sharedTokenCount(a, b);
-  return overlap >= 2;
-}
-
-function novelTokenCount(left, right) {
-  const rightSet = new Set(tokenize(right));
-  return [...new Set(tokenize(left))].filter((token) => !rightSet.has(token)).length;
+function requirementIdentity(value) {
+  const tokens = [...new Set(tokenize(requirementCore(value)))].sort();
+  return tokens.join('|') || normalizeKey(requirementCore(value));
 }
 
 function scoreAction(item) {
@@ -343,8 +336,7 @@ function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
   for (const requirement of latest.requirements || []) {
     const matchesPrior = priorRequirements.some((item) =>
       item.category === requirement.category &&
-      phrasesSimilar(item.text, requirement.text) &&
-      novelTokenCount(requirement.text, item.text) < 2
+      requirementIdentity(item.text) === requirementIdentity(requirement.text)
     );
     if (matchesPrior) continue;
     const evidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
@@ -380,8 +372,7 @@ function stakeholderGapItemsMatch(left, right) {
   if (normalizeKey(left.stakeholderName) !== normalizeKey(right.stakeholderName)) return false;
   if (normalizeKey(left.stakeholderRole) !== normalizeKey(right.stakeholderRole)) return false;
   if (normalizeKey(left.category) !== normalizeKey(right.category)) return false;
-  if (!phrasesSimilar(left.title, right.title)) return false;
-  return novelTokenCount(left.title, right.title) < 2 || novelTokenCount(right.title, left.title) < 2;
+  return requirementIdentity(left.title) === requirementIdentity(right.title);
 }
 
 function dedupeStakeholderGapItems(items) {
