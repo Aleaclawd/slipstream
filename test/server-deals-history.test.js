@@ -15,6 +15,14 @@ const regressionCallTwo = [
   '[00:18] Pat (VP Engineering, Acme): The POC needs BigQuery write-back live before we sign off.',
 ].join('\n');
 
+let serverInstanceId = 0;
+
+async function startFreshServer() {
+  const { server } = await import(`../src/server.js?instance=${serverInstanceId += 1}`);
+  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
+  return server;
+}
+
 test('saved deal API keeps historical commercial and open-question blockers after a later technical-only follow-up', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-'));
   const dealsDir = join(root, 'deals');
@@ -29,9 +37,8 @@ test('saved deal API keeps historical commercial and open-question blockers afte
   process.env.PORT = '0';
   process.env.HOST = '127.0.0.1';
 
-  const { server } = await import('../src/server.js');
+  const server = await startFreshServer();
   t.after(async () => new Promise((resolve) => server.close(resolve)));
-  if (!server.listening) await new Promise((resolve) => server.once('listening', resolve));
 
   const base = `http://127.0.0.1:${server.address().port}`;
 
@@ -69,4 +76,72 @@ test('saved deal API keeps historical commercial and open-question blockers afte
   assert.ok(rajGaps.items.some((item) => item.category === 'open_question' && /onboarding support/i.test(item.title)));
   assert.ok(data.brief.nextQuestions.some((item) => /pricing package and ROI proof/i.test(item.question)));
   assert.ok(data.brief.nextQuestions.some((item) => /lock the next step/i.test(item.question)));
+});
+
+test('saved deal API dedupes repeated historical blocker restatements and keeps the newest call citation', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-dedupe-'));
+  const dealsDir = join(root, 'deals');
+  const telemetryDir = join(root, 'telemetry');
+  const libraryDir = join(root, 'library');
+
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  process.env.SLIPSTREAM_DEALS_DIR = dealsDir;
+  process.env.SLIPSTREAM_TELEMETRY_DIR = telemetryDir;
+  process.env.SLIPSTREAM_DATA_DIR = libraryDir;
+  process.env.PORT = '0';
+  process.env.HOST = '127.0.0.1';
+
+  const server = await startFreshServer();
+  t.after(async () => new Promise((resolve) => server.close(resolve)));
+
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const callThree = [
+    '[00:00] Priya (SE, Slipstream): Let me line up the legal follow-up.',
+    '[00:12] Lena (CFO, Acme): I need the pricing package and ROI proof before legal approves.',
+  ].join('\n');
+
+  let res = await fetch(`${base}/api/deals`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Acme renewal' }),
+  });
+  let data = await res.json();
+  assert.equal(res.status, 200);
+  const dealId = data.deal.id;
+
+  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ transcript: regressionCallOne, useLlm: false, label: 'Call 1' }),
+  });
+  data = await res.json();
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ transcript: regressionCallTwo, useLlm: false, label: 'Call 2' }),
+  });
+  data = await res.json();
+  assert.equal(res.status, 200);
+
+  res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ transcript: callThree, useLlm: false, label: 'Call 3' }),
+  });
+  data = await res.json();
+  assert.equal(res.status, 200);
+
+  const lenaGaps = data.brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaQuestions = data.brief.nextQuestions.filter((item) => item.stakeholder === 'Lena');
+
+  assert.ok(lenaGaps, 'repeated blocker should still be present for Lena');
+  assert.equal(lenaGaps.items.length, 1, 'repeated blocker should collapse to one stakeholder gap item');
+  assert.match(lenaGaps.items[0].title, /pricing package and roi proof/i);
+  assert.equal(lenaGaps.items[0].transcriptEvidence?.label, 'Call 3 · line 2');
+  assert.equal(lenaQuestions.length, 1, 'repeated blocker should only yield one next question');
+  assert.equal(lenaQuestions[0].transcriptEvidence?.label, 'Call 3 · line 2');
+  assert.ok(!data.brief.recentChanges.some((item) => /pricing package and roi proof/i.test(item.title)), 'restated blocker should not be treated as a net-new change');
 });

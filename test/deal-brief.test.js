@@ -137,3 +137,83 @@ test('deal brief keeps historical commercial and open questions after a later te
   assert.ok(brief.nextQuestions.some((item) => /pricing package and ROI proof/i.test(item.question) && /Discovery call/.test(item.transcriptEvidence?.label || '')));
   assert.ok(brief.nextQuestions.some((item) => /lock the next step/i.test(item.question) && /Discovery call/.test(item.transcriptEvidence?.label || '')));
 });
+
+test('deal brief dedupes repeated historical blocker restatements and keeps the freshest citation', () => {
+  const baseResult = {
+    summary: { dealName: 'Acme', oneLiner: 'Synthetic repeated blocker regression' },
+    pains: [],
+    objections: [],
+    competitors: [],
+    actions: [],
+    followupEmail: { subject: '', body: '' },
+    demoPrep: [],
+    rfpRows: [],
+    crmFields: { EconomicBuyer: 'Lena' },
+    dealHealth: { score: 0, dimensions: [] },
+    risks: [],
+    nextBestActions: [],
+    battlecards: [],
+  };
+
+  let deal = createThreadRecord(
+    { title: 'Acme renewal', account: 'Acme' },
+    { now: () => '2026-06-18T15:00:00.000Z' },
+  );
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): Before procurement starts, I need ROI proof and the pricing package.',
+    label: 'Call 1',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'Before procurement starts, I need ROI proof and the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need ROI proof and the pricing package before procurement starts', evidence: { quote: 'Before procurement starts, I need ROI proof and the pricing package.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-18T15:05:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Pat (VP Engineering, Acme): The POC needs BigQuery write-back live before we sign off.',
+    label: 'Call 2',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Pat', role: 'VP Engineering', evidence: { quote: 'The POC needs BigQuery write-back live before we sign off.', line: 1, speaker: 'Pat', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'integration', text: 'Need BigQuery write-back live before sign-off', evidence: { quote: 'The POC needs BigQuery write-back live before we sign off.', line: 1, speaker: 'Pat', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Pat', role: 'VP Engineering', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-19T15:05:00.000Z' });
+  deal = appendCallToThread(deal, {
+    transcript: '[00:00] Lena (CFO, Acme): I need the pricing package and ROI proof before legal approves.',
+    label: 'Call 3',
+    meta: { engine: 'deterministic', durationMs: 3 },
+    result: {
+      ...baseResult,
+      stakeholders: [
+        { name: 'Lena', role: 'CFO', evidence: { quote: 'I need the pricing package and ROI proof before legal approves.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      requirements: [
+        { category: 'commercial', text: 'Need the pricing package and ROI proof before legal approves', evidence: { quote: 'I need the pricing package and ROI proof before legal approves.', line: 1, speaker: 'Lena', ts: '00:00' } },
+      ],
+      analytics: { speakers: [{ name: 'Lena', role: 'CFO', turns: 1 }], note: '' },
+    },
+  }, { now: () => '2026-06-20T15:05:00.000Z' });
+
+  const brief = buildDealBrief({ deal, generatedAt: '2026-06-20T16:30:00.000Z' });
+  const lenaGaps = brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaQuestions = brief.nextQuestions.filter((item) => item.stakeholder === 'Lena');
+
+  assert.ok(lenaGaps, 'repeated blocker should still be present for Lena');
+  assert.equal(lenaGaps.items.length, 1, 'repeated blocker should collapse to one stakeholder gap item');
+  assert.match(lenaGaps.items[0].title, /pricing package and roi proof/i);
+  assert.equal(lenaGaps.items[0].transcriptEvidence?.label, 'Call 3 · line 1');
+  assert.equal(lenaQuestions.length, 1, 'repeated blocker should only yield one next question');
+  assert.equal(lenaQuestions[0].transcriptEvidence?.label, 'Call 3 · line 1');
+  assert.ok(!brief.recentChanges.some((item) => /pricing package and roi proof/i.test(item.title)), 'restated blocker should not be treated as a net-new change');
+});
