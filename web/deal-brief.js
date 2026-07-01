@@ -19,6 +19,7 @@ const GAP_TOKEN_STOP = new Set([
   'part', 'whether', 'still', 'needs', 'proof', 'answer', 'answers', 'clarity', 'show', 'move', 'forward',
   'included', 'include', 'included', 'help',
 ]);
+const COMMERCIAL_GAP_CONTEXT_TOKENS = new Set(['pricing', 'procurement']);
 
 function escHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (char) => ({
@@ -95,9 +96,13 @@ function canonicalGapToken(token, category) {
   return token;
 }
 
+function gapRequirementText(item) {
+  return String(item?.title || item?.text || '');
+}
+
 function gapRequirementTokens(item) {
   const category = normalizeKey(item?.category);
-  const raw = `${item?.title || ''} ${item?.transcriptEvidence?.quote || ''}`;
+  const raw = gapRequirementText(item);
   const tokens = [];
   const seen = new Set();
   for (const token of normalizeKey(raw).match(/[a-z0-9]+/g) || []) {
@@ -116,6 +121,41 @@ function gapRequirementSharedTokenCount(left, right) {
     if (rightSet.has(token)) count++;
   }
   return count;
+}
+
+function gapRequirementSharedSpecificTokenCount(left, right) {
+  const useCommercialContextFilter = normalizeKey(left?.category) === 'commercial' && normalizeKey(right?.category) === 'commercial';
+  const rightSet = new Set(
+    gapRequirementTokens(right).filter((token) => !(useCommercialContextFilter && COMMERCIAL_GAP_CONTEXT_TOKENS.has(token))),
+  );
+  let count = 0;
+  for (const token of gapRequirementTokens(left)) {
+    if (useCommercialContextFilter && COMMERCIAL_GAP_CONTEXT_TOKENS.has(token)) continue;
+    if (rightSet.has(token)) count++;
+  }
+  return count;
+}
+
+function commercialRequirementMatches(left, right) {
+  return normalizeKey(left?.category) === 'commercial' &&
+    normalizeKey(right?.category) === 'commercial' &&
+    gapRequirementSharedTokenCount(left, right) >= 2 &&
+    gapRequirementSharedSpecificTokenCount(left, right) >= 1;
+}
+
+function requirementText(item) {
+  return String(item?.text || item?.title || '');
+}
+
+function recentRequirementMatches(left, right) {
+  const leftText = requirementText(left);
+  const rightText = requirementText(right);
+  if (requirementIdentity(leftText) === requirementIdentity(rightText)) return true;
+  if (commercialRequirementMatches(left, right)) return true;
+  return normalizeKey(left?.category) !== 'commercial' &&
+    normalizeKey(right?.category) !== 'commercial' &&
+    phrasesSimilar(leftText, rightText) &&
+    novelTokenCount(rightText, leftText) < 2;
 }
 
 function scoreAction(item) {
@@ -398,13 +438,7 @@ function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
   for (const requirement of latest.requirements || []) {
     const matchesPrior = priorRequirements.some((item) =>
       item.category === requirement.category &&
-      (
-        requirementIdentity(item.text) === requirementIdentity(requirement.text) ||
-        (
-          phrasesSimilar(item.text, requirement.text) &&
-          novelTokenCount(requirement.text, item.text) < 2
-        )
-      )
+      recentRequirementMatches(item, requirement)
     );
     if (matchesPrior) continue;
     const evidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
@@ -441,7 +475,8 @@ function stakeholderGapItemsMatch(left, right) {
   if (normalizeKey(left.stakeholderRole) !== normalizeKey(right.stakeholderRole)) return false;
   if (normalizeKey(left.category) !== normalizeKey(right.category)) return false;
   if (requirementIdentity(left.title) === requirementIdentity(right.title)) return true;
-  if (gapRequirementSharedTokenCount(left, right) >= 2) return true;
+  if (commercialRequirementMatches(left, right)) return true;
+  if (normalizeKey(left.category) !== 'commercial' && gapRequirementSharedTokenCount(left, right) >= 2) return true;
   const leftTitle = normalizeKey(left.title);
   const rightTitle = normalizeKey(right.title);
   return Boolean(leftTitle && rightTitle && (

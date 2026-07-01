@@ -189,3 +189,104 @@ test('saved deal API dedupes repeated historical blocker restatements and keeps 
   assert.equal(lenaQuestions[0].transcriptEvidence?.label, 'Call 3 · line 2');
   assert.ok(!data.brief.recentChanges.some((item) => /pricing package and roi proof/i.test(item.title)), 'restated blocker should not be treated as a net-new change');
 });
+
+test('saved deal API keeps distinct commercial blockers that only share pricing and procurement context', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-distinct-'));
+  const dealsDir = join(root, 'deals');
+  const telemetryDir = join(root, 'telemetry');
+  const libraryDir = join(root, 'library');
+
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  process.env.SLIPSTREAM_DEALS_DIR = dealsDir;
+  process.env.SLIPSTREAM_TELEMETRY_DIR = telemetryDir;
+  process.env.SLIPSTREAM_DATA_DIR = libraryDir;
+  process.env.PORT = '0';
+  process.env.HOST = '127.0.0.1';
+
+  const server = await startServer(t);
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  let res = await fetch(`${base}/api/deals`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Acme renewal' }),
+  });
+  let data = await res.json();
+  assert.equal(res.status, 200);
+  const dealId = data.deal.id;
+
+  for (const [label, transcript] of [
+    ['Call 1', [
+      '[00:00] Priya (SE, Slipstream): Let us map the commercial blockers first.',
+      '[00:12] Lena (CFO, Acme): Before procurement starts, I need pricing package and ROI proof.',
+    ].join('\n')],
+    ['Call 2', [
+      '[00:00] Priya (SE, Slipstream): Let us isolate the second blocker.',
+      '[00:12] Lena (CFO, Acme): Before procurement starts, I need pricing redlines and legal terms.',
+    ].join('\n')],
+  ]) {
+    res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, useLlm: false, label }),
+    });
+    data = await res.json();
+    assert.equal(res.status, 200);
+  }
+
+  const lenaGaps = data.brief.stakeholderGaps.find((group) => group.name === 'Lena');
+  const lenaCommercialItems = lenaGaps?.items.filter((item) => item.category === 'commercial') || [];
+
+  assert.equal(lenaCommercialItems.length, 2, 'distinct commercial blockers should both remain visible on the deal brief');
+  assert.ok(lenaCommercialItems.some((item) => /pricing package and roi proof/i.test(item.title)));
+  assert.ok(lenaCommercialItems.some((item) => /pricing redlines and legal terms/i.test(item.title)));
+});
+
+test('saved deal API keeps one-token commercial expansions in recent changes', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'slipstream-server-deals-history-recent-'));
+  const dealsDir = join(root, 'deals');
+  const telemetryDir = join(root, 'telemetry');
+  const libraryDir = join(root, 'library');
+
+  t.after(async () => rm(root, { recursive: true, force: true }));
+
+  process.env.SLIPSTREAM_DEALS_DIR = dealsDir;
+  process.env.SLIPSTREAM_TELEMETRY_DIR = telemetryDir;
+  process.env.SLIPSTREAM_DATA_DIR = libraryDir;
+  process.env.PORT = '0';
+  process.env.HOST = '127.0.0.1';
+
+  const server = await startServer(t);
+  const base = `http://127.0.0.1:${server.address().port}`;
+
+  let res = await fetch(`${base}/api/deals`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ title: 'Acme renewal' }),
+  });
+  let data = await res.json();
+  assert.equal(res.status, 200);
+  const dealId = data.deal.id;
+
+  for (const [label, transcript] of [
+    ['Call 1', [
+      '[00:00] Priya (SE, Slipstream): Let us review the procurement path.',
+      '[00:12] Lena (CFO, Acme): Before procurement starts, I need the pricing package.',
+    ].join('\n')],
+    ['Call 2', [
+      '[00:00] Priya (SE, Slipstream): Let us capture the updated pricing need.',
+      '[00:12] Lena (CFO, Acme): Before procurement starts, I need the pricing package discount.',
+    ].join('\n')],
+  ]) {
+    res = await fetch(`${base}/api/deals/${encodeURIComponent(dealId)}/calls`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ transcript, useLlm: false, label }),
+    });
+    data = await res.json();
+    assert.equal(res.status, 200);
+  }
+
+  assert.ok(data.brief.recentChanges.some((item) => /pricing package discount/i.test(item.title)), 'latest one-token expansion should remain a visible change');
+});
