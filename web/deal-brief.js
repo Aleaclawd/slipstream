@@ -1,6 +1,18 @@
 import { aggregateThreadResult } from './threads.js';
 
 const PRIORITY_ORDER = { P1: 0, P2: 1, P3: 2 };
+const GAP_CATEGORY_ORDER = { commercial: 0, security: 1, integration: 2, scale: 3, open_question: 4, other: 5 };
+const BRIEF_STOP = new Set([
+  'the', 'and', 'with', 'need', 'would', 'that', 'this', 'your', 'our', 'their', 'from', 'have',
+  'will', 'about', 'into', 'what', 'when', 'where', 'which', 'there', 'they', 'them', 'then', 'than',
+  'also', 'some', 'more', 'most', 'very', 'just', 'like', 'make', 'made', 'does', 'done', 'both',
+  'each', 'only', 'over', 'must', 'able', 'want', 'take', 'give', 'data', 'call', 'team', 'time',
+  'plan', 'help', 'sure', 'okay', 'good', 'great', 'thanks', 'yes', 'are', 'was', 'were', 'has',
+  'its', 'for', 'but', 'not', 'all', 'any', 'get', 'can', 'you', 'use', 'via', 'per', 'out', 'now',
+  'one', 'two', 'too', 'let', 'see', 'say', 'set', 'run', 'day', 'is', 'meet', 'support', 'state',
+  'flag', 'confirm', 'product', 'gap', 'draft', 'please', 'question', 'security', 'compliance', 'we',
+  'integration', 'scale', 'performance', 'follow', 'call',
+]);
 
 function escHtml(value) {
   return String(value ?? '').replace(/[&<>"]/g, (char) => ({
@@ -18,8 +30,65 @@ function escAttr(value) {
 function normalizeKey(value) {
   return String(value || '')
     .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+function tokenize(value) {
+  return (normalizeKey(value).match(/[a-z0-9]+/g) || [])
+    .filter((token) => token.length >= 2 && !BRIEF_STOP.has(token));
+}
+
+function requirementCore(value) {
+  const normalized = singleLine(value)
+    .replace(/^(?:before|after|once|when|while|if|until|unless)\b[^,]*,\s*/i, '')
+    .replace(/^(?:please\s+confirm:\s*)/i, '')
+    .replace(/^(?:can|could|would)\s+you\s+confirm(?:\s+whether)?\s+/i, '')
+    .replace(/^(?:i|we)\s+need\s+/i, '')
+    .trim();
+  const contextualTail = normalized.split(/\b(?:before|after|once|when|while|if|until|unless)\b/i)[0];
+  return singleLine(contextualTail || normalized);
+}
+
+function requirementIdentity(value) {
+  const tokens = [...new Set(tokenize(requirementCore(value)))].sort();
+  return tokens.join('|') || normalizeKey(requirementCore(value));
+}
+
+function scoreAction(item) {
+  let score = 0;
+  if (item.owner === 'SE') score += 6;
+  if (item.kind === 'call_commitment') score += 4;
+  if (item.evidence) score += 2;
+  if (/\bdue\b/i.test(item.detail || '')) score += 2;
+  if ((item.title || '').length <= 70) score += 1;
+  if (/^(today i want to|before we go further|if you can show us)/i.test(item.title || '')) score -= 5;
+  return score;
+}
+
+function timeValue(value) {
+  if (!value) return 0;
+  const stamp = Date.parse(value);
+  return Number.isNaN(stamp) ? 0 : stamp;
+}
+
+function latestEvidenceValue(evidence) {
+  return timeValue(evidence?.callAt);
+}
+
+function withCallContext(evidence, call, fallbackLabel = 'Saved call') {
+  if (!evidence?.quote || !call) return evidence;
+  return {
+    ...evidence,
+    callId: evidence.callId || call.id,
+    callLabel: evidence.callLabel || textOrFallback(call.label, fallbackLabel),
+    callAt: evidence.callAt || call.createdAt || null,
+  };
+}
+
+function isSeRole(role) {
+  return /\b(?:SE|AE)\b|sales\s+eng(?:ineer)?|solutions?\s+(?:consultant|engineer|architect)|account\s+exec(?:utive)?/i.test(role || '');
 }
 
 function slugify(value) {
@@ -125,6 +194,7 @@ function dedupeBy(items, keyFn) {
 function chooseTopAction(result, callsById) {
   const explicit = (result.actions || []).map((item) => ({
     kind: 'call_commitment',
+    owner: item.owner || '',
     priority: item.priority || 'P2',
     title: item.title,
     detail: [item.owner, item.due ? `due ${item.due}` : null].filter(Boolean).join(' · '),
@@ -132,6 +202,7 @@ function chooseTopAction(result, callsById) {
   }));
   const suggested = (result.nextBestActions || []).map((item) => ({
     kind: 'ai_recommendation',
+    owner: 'AI',
     priority: item.priority || 'P2',
     title: item.action,
     detail: item.rationale || '',
@@ -143,9 +214,11 @@ function chooseTopAction(result, callsById) {
     .sort((left, right) => {
       const priorityGap = (PRIORITY_ORDER[left.priority] ?? 9) - (PRIORITY_ORDER[right.priority] ?? 9);
       if (priorityGap) return priorityGap;
+      const actionGap = scoreAction(right) - scoreAction(left);
+      if (actionGap) return actionGap;
+      const freshnessGap = latestEvidenceValue(right.evidence) - latestEvidenceValue(left.evidence);
+      if (freshnessGap) return freshnessGap;
       if (left.kind !== right.kind) return left.kind === 'call_commitment' ? -1 : 1;
-      if (left.evidence && !right.evidence) return -1;
-      if (!left.evidence && right.evidence) return 1;
       return 0;
     })[0] || null;
 }
@@ -184,6 +257,257 @@ function buildLibraryCitationMap(verifiedRequirements) {
   return [...citations.values()];
 }
 
+function priorAggregateForDeal(deal) {
+  const calls = Array.isArray(deal?.calls) ? deal.calls : [];
+  if (calls.length < 2) return null;
+  return aggregateThreadResult({
+    ...deal,
+    calls: calls.slice(0, -1),
+    updatedAt: calls[calls.length - 2]?.createdAt || deal.updatedAt,
+  });
+}
+
+function findStakeholder(stakeholders, name) {
+  const target = normalizeKey(name);
+  return stakeholders.find((item) => normalizeKey(item.name) === target) || null;
+}
+
+function stakeholderGroupMeta(stakeholders, name, role, crmFields) {
+  const stakeholder = findStakeholder(stakeholders, name);
+  const resolvedName = stakeholder?.name || textOrFallback(name, 'Buying committee');
+  const resolvedRole = stakeholder?.role || role || '';
+  return {
+    name: resolvedName,
+    role: resolvedRole,
+    badges: stakeholderBadges(resolvedName, crmFields),
+  };
+}
+
+function inferGapCategory(value) {
+  const text = `${value || ''}`;
+  if (/security|sso|saml|okta|audit|residency/i.test(text)) return 'security';
+  if (/integration|snowflake|bigquery|slack|write-back|write back/i.test(text)) return 'integration';
+  if (/scale|performance|latency|throughput|events/i.test(text)) return 'scale';
+  if (/budget|pricing|roi|procurement|cfo|commercial/i.test(text)) return 'commercial';
+  if (/please confirm|open question|\?/.test(text)) return 'open_question';
+  return 'other';
+}
+
+function changeHeadlineForRequirement(requirement) {
+  switch (requirement.category) {
+    case 'security':
+      return 'Security review moved forward';
+    case 'integration':
+      return 'POC scope changed';
+    case 'scale':
+      return 'Scale bar was clarified';
+    case 'commercial':
+      return 'Commercial path changed';
+    case 'open_question':
+      return 'A new open question surfaced';
+    default:
+      return 'New fact captured on the latest call';
+  }
+}
+
+function buildRecentChanges({ deal, latestCall, priorAggregate, callsById }) {
+  if (!latestCall?.result) return [];
+  const latest = latestCall.result;
+  const priorStakeholderKeys = new Set(
+    (priorAggregate?.stakeholders || [])
+      .filter((item) => !isSeRole(item.role))
+      .map((item) => `${normalizeKey(item.name)}|${normalizeKey(item.role)}`),
+  );
+  const priorRequirements = priorAggregate?.requirements || [];
+  const changes = [];
+
+  for (const stakeholder of latest.stakeholders || []) {
+    if (!stakeholder.name || isSeRole(stakeholder.role)) continue;
+    const key = `${normalizeKey(stakeholder.name)}|${normalizeKey(stakeholder.role)}`;
+    if (priorStakeholderKeys.has(key)) continue;
+    changes.push({
+      title: `${stakeholder.name} joined the buying committee`,
+      detail: stakeholder.role || 'Role captured on the latest call.',
+      badges: ['New stakeholder'],
+      evidence: decorateTranscriptEvidence(withCallContext(stakeholder.evidence, latestCall), callsById),
+    });
+  }
+
+  for (const requirement of latest.requirements || []) {
+    const matchesPrior = priorRequirements.some((item) =>
+      item.category === requirement.category &&
+      requirementIdentity(item.text) === requirementIdentity(requirement.text)
+    );
+    if (matchesPrior) continue;
+    const evidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, latestCall), callsById);
+    const speaker = evidence?.speaker || '';
+    changes.push({
+      title: textOrFallback(requirement.text, requirement.category.replace(/_/g, ' ')),
+      detail: speaker
+        ? `${changeHeadlineForRequirement(requirement)} · raised by ${speaker}.`
+        : changeHeadlineForRequirement(requirement),
+      badges: [requirement.category.replace(/_/g, ' ')],
+      evidence,
+    });
+  }
+
+  return dedupeBy(changes, (item) => `${normalizeKey(item.title)}|${normalizeKey(item.detail)}`).slice(0, 6);
+}
+
+function requirementGapDetail(category) {
+  return category === 'commercial'
+    ? 'Commercial approval details still need an exact pricing / ROI close plan.'
+    : 'The prospect asked a next-step question that still needs a concrete answer.';
+}
+
+function compareStakeholderGapItems(left, right) {
+  const freshnessGap = latestEvidenceValue(right.transcriptEvidence) - latestEvidenceValue(left.transcriptEvidence);
+  if (freshnessGap) return freshnessGap;
+  const categoryGap = (GAP_CATEGORY_ORDER[left.category] ?? 9) - (GAP_CATEGORY_ORDER[right.category] ?? 9);
+  if (categoryGap) return categoryGap;
+  return normalizeKey(left.title).localeCompare(normalizeKey(right.title));
+}
+
+function stakeholderGapItemsMatch(left, right) {
+  if (normalizeKey(left.stakeholderName) !== normalizeKey(right.stakeholderName)) return false;
+  if (normalizeKey(left.stakeholderRole) !== normalizeKey(right.stakeholderRole)) return false;
+  if (normalizeKey(left.category) !== normalizeKey(right.category)) return false;
+  return requirementIdentity(left.title) === requirementIdentity(right.title);
+}
+
+function dedupeStakeholderGapItems(items) {
+  const deduped = [];
+  for (const item of [...items].sort(compareStakeholderGapItems)) {
+    if (deduped.some((candidate) => stakeholderGapItemsMatch(candidate, item))) continue;
+    deduped.push(item);
+  }
+  return deduped;
+}
+
+function buildHistoricalRequirementGapItems({ calls, stakeholders, callsById, crmFields }) {
+  const items = [];
+  for (let index = calls.length - 1; index >= 0; index -= 1) {
+    const call = calls[index];
+    for (const requirement of call?.result?.requirements || []) {
+      if (!['commercial', 'open_question'].includes(requirement.category)) continue;
+      const transcriptEvidence = decorateTranscriptEvidence(withCallContext(requirement.evidence, call), callsById);
+      const group = stakeholderGroupMeta(stakeholders, transcriptEvidence?.speaker || requirement.evidence?.speaker, '', crmFields);
+      items.push({
+        stakeholderName: group.name,
+        stakeholderRole: group.role,
+        stakeholderBadges: group.badges,
+        category: requirement.category,
+        title: requirement.text,
+        detail: requirementGapDetail(requirement.category),
+        transcriptEvidence,
+        libraryEvidence: null,
+      });
+    }
+  }
+  return dedupeStakeholderGapItems(items);
+}
+
+function buildStakeholderGaps({ aggregate, calls, stakeholders, callsById, libraryIndex }) {
+  const items = [];
+
+  for (const row of aggregate.rfpRows || []) {
+    if (row.status === 'verified' && row.answerSource === 'call') continue;
+    const transcriptEvidence = decorateTranscriptEvidence(row.evidence, callsById);
+    const libraryEvidence = decorateLibraryEvidence(row.libraryEvidence, libraryIndex);
+    const group = stakeholderGroupMeta(stakeholders, transcriptEvidence?.speaker || row.evidence?.speaker, '', aggregate.crmFields);
+    items.push({
+      stakeholderName: group.name,
+      stakeholderRole: group.role,
+      stakeholderBadges: group.badges,
+      category: inferGapCategory(row.question),
+      title: row.question,
+      detail: gapReason(row),
+      transcriptEvidence,
+      libraryEvidence,
+    });
+  }
+
+  items.push(...buildHistoricalRequirementGapItems({
+    calls,
+    stakeholders,
+    callsById,
+    crmFields: aggregate.crmFields,
+  }));
+
+  const groups = new Map();
+  for (const item of items) {
+    const key = `${normalizeKey(item.stakeholderName)}|${normalizeKey(item.stakeholderRole)}`;
+    const current = groups.get(key) || {
+      name: item.stakeholderName,
+      role: item.stakeholderRole,
+      badges: item.stakeholderBadges,
+      items: [],
+    };
+    current.items.push(item);
+    groups.set(key, current);
+  }
+
+  return [...groups.values()]
+    .map((group) => ({
+      ...group,
+      items: dedupeStakeholderGapItems(group.items),
+    }))
+    .sort((left, right) => {
+      const freshnessGap = latestEvidenceValue(right.items[0]?.transcriptEvidence) - latestEvidenceValue(left.items[0]?.transcriptEvidence);
+      if (freshnessGap) return freshnessGap;
+      const badgeGap = right.badges.length - left.badges.length;
+      if (badgeGap) return badgeGap;
+      return normalizeKey(left.name).localeCompare(normalizeKey(right.name));
+    });
+}
+
+function questionForGap(item, stakeholder) {
+  const quote = `${item.transcriptEvidence?.quote || ''} ${item.title || ''}`;
+  if (item.category === 'security') {
+    return `What still has to be true for ${stakeholder} to sign off on security before the next stage?`;
+  }
+  if (item.category === 'integration') {
+    if (/bigquery/i.test(quote) && /snowflake/i.test(quote)) {
+      return 'Does the next POC need Snowflake and BigQuery write-back in one pass, or can BigQuery land right after Snowflake?';
+    }
+    if (/write[- ]?back/i.test(quote)) {
+      return 'Which write-back flow has to work live for you to call the integration proven?';
+    }
+    return 'Which integration workflow has to work live on the next call for this requirement to be closed?';
+  }
+  if (item.category === 'scale') {
+    return 'What volume and latency threshold will you use to judge the POC as production-ready?';
+  }
+  if (item.category === 'commercial') {
+    if (/pricing|roi|procurement|july/i.test(quote)) {
+      return 'What pricing package and ROI proof do you need before procurement can start?';
+    }
+    return 'What has to be true for budget approval to move forward this quarter?';
+  }
+  if (item.category === 'open_question') {
+    return 'What answer would let us lock the next step before the call ends?';
+  }
+  return 'What would have to be true on the next call for this gap to be considered closed?';
+}
+
+function buildNextQuestions(stakeholderGaps) {
+  return stakeholderGaps
+    .map((group) => {
+      const item = group.items[0];
+      if (!item) return null;
+      return {
+        stakeholder: group.name,
+        role: group.role,
+        question: questionForGap(item, group.name || 'the stakeholder'),
+        detail: item.detail,
+        transcriptEvidence: item.transcriptEvidence,
+        libraryEvidence: item.libraryEvidence,
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
 function gapReason(row) {
   if (row.answerSource === 'none') return 'No supporting library passage yet.';
   if (row.answerSource === 'library' && row.libraryEvidence) return 'Library-grounded answer still needs a human confirmation pass.';
@@ -201,6 +525,25 @@ function renderCitationLinks({ transcript = null, library = null }) {
 function renderBulletList(items, renderItem, emptyCopy) {
   if (!items.length) return `<div class="brief-empty">${escHtml(emptyCopy)}</div>`;
   return `<ul class="brief-list">${items.map((item) => `<li>${renderItem(item)}</li>`).join('')}</ul>`;
+}
+
+function renderStakeholderGapGroups(groups) {
+  if (!groups.length) return '<div class="brief-empty">No stakeholder gaps captured yet.</div>';
+  return groups.map((group) => {
+    const badges = group.badges.length
+      ? `<span class="brief-badges">${group.badges.map((badge) => `<span class="brief-badge">${escHtml(badge)}</span>`).join('')}</span>`
+      : '';
+    const items = group.items.map((item) => `<li>
+      <div class="brief-item-head"><strong>${escHtml(item.title)}</strong></div>
+      <div class="brief-item-copy">${escHtml(item.detail)}</div>
+      ${renderCitationLinks({ transcript: item.transcriptEvidence, library: item.libraryEvidence })}
+    </li>`).join('');
+    return `<article class="brief-gap-group">
+      <div class="brief-item-head"><strong>${escHtml(group.name)}</strong>${badges}</div>
+      <div class="brief-item-copy">${escHtml(group.role || 'Stakeholder')}</div>
+      <ul class="brief-list">${items}</ul>
+    </article>`;
+  }).join('');
 }
 
 function renderSection(title, content) {
@@ -226,6 +569,8 @@ export function buildDealBrief({ deal, view = null, libraryIndex = null, generat
   const aggregate = view?.result || aggregateThreadResult(deal);
   const calls = Array.isArray(deal.calls) ? deal.calls : [];
   const callsById = new Map(calls.map((call, index) => [call.id, { ...call, label: textOrFallback(call.label, `Call ${index + 1}`) }]));
+  const latestCall = calls[calls.length - 1] || null;
+  const priorAggregate = priorAggregateForDeal(deal);
   const speakerTurns = new Map(
     (aggregate.analytics?.speakers || []).map((speaker) => [
       `${normalizeKey(speaker.name)}|${normalizeKey(speaker.role)}`,
@@ -281,6 +626,15 @@ export function buildDealBrief({ deal, view = null, libraryIndex = null, generat
   }));
 
   const topAction = chooseTopAction(aggregate, callsById);
+  const recentChanges = buildRecentChanges({ deal, latestCall, priorAggregate, callsById });
+  const stakeholderGaps = buildStakeholderGaps({
+    aggregate,
+    calls,
+    stakeholders,
+    callsById,
+    libraryIndex,
+  });
+  const nextQuestions = buildNextQuestions(stakeholderGaps);
   const libraryCitations = buildLibraryCitationMap(verifiedRequirements);
   const transcriptAppendix = buildTranscriptAppendix(deal);
   const libraryAppendix = dedupeBy(libraryCitations, (item) => item.passageId);
@@ -296,6 +650,9 @@ export function buildDealBrief({ deal, view = null, libraryIndex = null, generat
     champion: aggregate.crmFields?.Champion || '',
     economicBuyer: aggregate.crmFields?.EconomicBuyer || '',
     topAction,
+    recentChanges,
+    stakeholderGaps,
+    nextQuestions,
     stakeholders,
     pains,
     verifiedRequirements,
@@ -313,40 +670,33 @@ export function renderDealBriefPacket(brief) {
     `${brief.callCount} saved call${brief.callCount === 1 ? '' : 's'}`,
     brief.account ? `account: ${brief.account}` : '',
     brief.updatedAt ? `updated ${isoLabel(brief.updatedAt)}` : '',
+    `generated ${isoLabel(brief.generatedAt)}`,
   ].filter(Boolean).join(' · ');
 
   const topActionHtml = brief.topAction
     ? `<div class="brief-hero-card">
-        <div class="brief-kicker">Prioritized next action</div>
+        <div class="brief-kicker">Prioritized action before the next call</div>
         <h2>${escHtml(brief.topAction.title)}</h2>
         <p>${escHtml(brief.topAction.detail || 'Grounded from the saved deal workspace.')}</p>
         ${renderCitationLinks({ transcript: brief.topAction.evidence })}
       </div>`
     : `<div class="brief-hero-card">
-        <div class="brief-kicker">Prioritized next action</div>
+        <div class="brief-kicker">Prioritized action before the next call</div>
         <h2>No next action captured yet</h2>
         <p>Add another call or ground more requirements to produce a champion-ready brief.</p>
       </div>`;
 
-  const stakeholderHtml = renderBulletList(
-    brief.stakeholders,
+  const recentChangesHtml = renderBulletList(
+    brief.recentChanges,
     (item) => {
-      const badges = item.badges.length
+      const badges = item.badges?.length
         ? `<span class="brief-badges">${item.badges.map((badge) => `<span class="brief-badge">${escHtml(badge)}</span>`).join('')}</span>`
         : '';
-      return `<div class="brief-item-head"><strong>${escHtml(item.name)}</strong>${badges}</div>
-        <div class="brief-item-copy">${escHtml(item.role || 'Role not captured')}${item.turns ? ` · ${escHtml(item.turns)} turns` : ''}</div>
+      return `<div class="brief-item-head"><strong>${escHtml(item.title)}</strong>${badges}</div>
+        <div class="brief-item-copy">${escHtml(item.detail || 'Raised on the latest call.')}</div>
         ${renderCitationLinks({ transcript: item.evidence })}`;
     },
-    'No stakeholders captured yet.',
-  );
-
-  const painsHtml = renderBulletList(
-    brief.pains,
-    (item) => `<div class="brief-item-head"><strong>${escHtml(item.text)}</strong></div>
-      <div class="brief-item-copy">Severity: ${escHtml(item.severity)}</div>
-      ${renderCitationLinks({ transcript: item.evidence })}`,
-    'No pains captured yet.',
+    'No net-new facts since the previous call.',
   );
 
   const verifiedHtml = renderBulletList(
@@ -366,21 +716,21 @@ export function renderDealBriefPacket(brief) {
     'No library-grounded passages cited yet.',
   );
 
-  const gapsHtml = renderBulletList(
-    brief.openGaps,
-    (item) => `<div class="brief-item-head"><strong>${escHtml(item.question)}</strong></div>
-      <div class="brief-item-copy">${escHtml(item.note)}</div>
-      <div class="brief-item-copy">${escHtml(item.answer)}</div>
-      ${renderCitationLinks({ transcript: item.transcriptEvidence, library: item.libraryEvidence })}`,
-    'No open gaps.',
-  );
-
   const risksHtml = renderBulletList(
     brief.risks,
     (item) => `<div class="brief-item-head"><strong>${escHtml(item.text)}</strong></div>
       <div class="brief-item-copy">Severity: ${escHtml(item.severity)}</div>
       ${renderCitationLinks({ transcript: item.evidence })}`,
     'No risks flagged.',
+  );
+
+  const questionHtml = renderBulletList(
+    brief.nextQuestions,
+    (item) => `<div class="brief-item-head"><strong>${escHtml(item.stakeholder)}</strong>${item.role ? ` · ${escHtml(item.role)}` : ''}</div>
+      <div class="brief-item-copy">${escHtml(item.question)}</div>
+      <div class="brief-item-copy">${escHtml(item.detail)}</div>
+      ${renderCitationLinks({ transcript: item.transcriptEvidence, library: item.libraryEvidence })}`,
+    'No suggested questions yet.',
   );
 
   const transcriptHtml = brief.transcriptAppendix.map((call) => `<details class="brief-appendix" open>
@@ -399,7 +749,7 @@ export function renderDealBriefPacket(brief) {
   return `<div class="brief-packet">
     <section class="brief-hero">
       <div>
-        <div class="brief-kicker">Champion evidence packet</div>
+        <div class="brief-kicker">Next-call prep brief</div>
         <h1>${escHtml(brief.title || 'Saved deal brief')}</h1>
         <p>${escHtml(brief.oneLiner || 'Local saved deal workspace summary.')}</p>
         <div class="brief-meta">${escHtml(headingMeta)}</div>
@@ -408,12 +758,12 @@ export function renderDealBriefPacket(brief) {
     </section>
 
     <div class="brief-grid">
-      ${renderSection('Key stakeholders', stakeholderHtml)}
-      ${renderSection('Pains', painsHtml)}
-      ${renderSection('Verified requirements', verifiedHtml)}
+      ${renderSection('Changed since the prior call', recentChangesHtml)}
+      ${renderSection('Open gaps by stakeholder', renderStakeholderGapGroups(brief.stakeholderGaps))}
+      ${renderSection('Deal risks', risksHtml)}
+      ${renderSection('Suggested next questions', questionHtml)}
+      ${renderSection('Verified proof points', verifiedHtml)}
       ${renderSection('Library citations', libraryHtml)}
-      ${renderSection('Open gaps', gapsHtml)}
-      ${renderSection('Risk notes', risksHtml)}
     </div>
 
     <section class="brief-section">
@@ -483,6 +833,7 @@ export function renderDealBriefHtml(brief) {
       .brief-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
       .brief-list li { padding-bottom: 12px; border-bottom: 1px dashed var(--line); }
       .brief-list li:last-child { border-bottom: none; padding-bottom: 0; }
+      .brief-gap-group + .brief-gap-group { margin-top: 14px; }
       .brief-item-head { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
       .brief-badges { display: inline-flex; gap: 6px; flex-wrap: wrap; }
       .brief-badge {
@@ -528,7 +879,7 @@ export function renderDealBriefMarkdown(brief) {
       `Generated: ${isoLabel(brief.generatedAt)}`,
     ]),
     '',
-    '## Prioritized next action',
+    '## Prioritized action before the next call',
     '',
   ];
 
@@ -540,22 +891,47 @@ export function renderDealBriefMarkdown(brief) {
     lines.push('- No prioritized action captured yet.');
   }
 
-  lines.push('', '## Key stakeholders', '');
-  lines.push(brief.stakeholders.length
-    ? markdownList(brief.stakeholders.map((item) => {
-      const badges = item.badges.length ? ` [${item.badges.join(', ')}]` : '';
-      const turns = item.turns ? ` · ${item.turns} turns` : '';
-      const citation = item.evidence ? ` · ${markdownTranscriptRef(item.evidence)}` : '';
-      return `**${item.name}**${badges} — ${item.role || 'Role not captured'}${turns}${citation}`;
+  lines.push('', '## Changed since the prior call', '');
+  lines.push(brief.recentChanges.length
+    ? markdownList(brief.recentChanges.map((item) => {
+      const badges = item.badges?.length ? ` [${item.badges.join(', ')}]` : '';
+      const citation = markdownTranscriptRef(item.evidence);
+      return `**${item.title}**${badges}\n  - Detail: ${item.detail || 'Raised on the latest call.'}\n  - Citation: ${citation || 'none'}`;
     }))
-    : '- No stakeholders captured yet.');
+    : '- No net-new facts since the previous call.');
 
-  lines.push('', '## Pains', '');
-  lines.push(brief.pains.length
-    ? markdownList(brief.pains.map((item) => `**${item.text}** · severity ${item.severity}${item.evidence ? ` · ${markdownTranscriptRef(item.evidence)}` : ''}`))
-    : '- No pains captured yet.');
+  lines.push('', '## Open gaps by stakeholder', '');
+  if (!brief.stakeholderGaps.length) {
+    lines.push('- No stakeholder gaps captured yet.');
+  } else {
+    for (const group of brief.stakeholderGaps) {
+      const badges = group.badges.length ? ` [${group.badges.join(', ')}]` : '';
+      lines.push(`### ${group.name}${badges}`);
+      lines.push('');
+      lines.push(group.role || 'Stakeholder');
+      lines.push('');
+      lines.push(markdownList(group.items.map((item) => {
+        const refs = [markdownTranscriptRef(item.transcriptEvidence), markdownLibraryRef(item.libraryEvidence)].filter(Boolean).join(' · ');
+        return `**${item.title}**\n  - Gap: ${item.detail}\n  - Citations: ${refs || 'none'}`;
+      })));
+      lines.push('');
+    }
+  }
 
-  lines.push('', '## Verified requirements', '');
+  lines.push('## Deal risks', '');
+  lines.push(brief.risks.length
+    ? markdownList(brief.risks.map((item) => `**${item.text}** · severity ${item.severity}${item.evidence ? ` · ${markdownTranscriptRef(item.evidence)}` : ''}`))
+    : '- No risks flagged.');
+
+  lines.push('', '## Suggested next questions', '');
+  lines.push(brief.nextQuestions.length
+    ? markdownList(brief.nextQuestions.map((item) => {
+      const refs = [markdownTranscriptRef(item.transcriptEvidence), markdownLibraryRef(item.libraryEvidence)].filter(Boolean).join(' · ');
+      return `**${item.stakeholder}**${item.role ? ` · ${item.role}` : ''}\n  - Ask: ${item.question}\n  - Why: ${item.detail}\n  - Citations: ${refs || 'none'}`;
+    }))
+    : '- No suggested questions yet.');
+
+  lines.push('', '## Verified proof points', '');
   lines.push(brief.verifiedRequirements.length
     ? markdownList(brief.verifiedRequirements.map((item) => {
       const refs = [markdownTranscriptRef(item.transcriptEvidence), markdownLibraryRef(item.libraryEvidence)].filter(Boolean).join(' · ');
@@ -567,19 +943,6 @@ export function renderDealBriefMarkdown(brief) {
   lines.push(brief.libraryCitations.length
     ? markdownList(brief.libraryCitations.map((item) => `**${item.docName} · ${item.heading}** — ${singleLine(item.quote)}\n  - Used by: ${item.usedBy.join('; ')}\n  - Link: ${markdownLibraryRef(item)}`))
     : '- No library-grounded passages cited yet.');
-
-  lines.push('', '## Open gaps', '');
-  lines.push(brief.openGaps.length
-    ? markdownList(brief.openGaps.map((item) => {
-      const refs = [markdownTranscriptRef(item.transcriptEvidence), markdownLibraryRef(item.libraryEvidence)].filter(Boolean).join(' · ');
-      return `**${item.question}**\n  - Gap: ${item.note}\n  - Current draft: ${item.answer}\n  - Citations: ${refs || 'none'}`;
-    }))
-    : '- No open gaps.');
-
-  lines.push('', '## Risk notes', '');
-  lines.push(brief.risks.length
-    ? markdownList(brief.risks.map((item) => `**${item.text}** · severity ${item.severity}${item.evidence ? ` · ${markdownTranscriptRef(item.evidence)}` : ''}`))
-    : '- No risks flagged.');
 
   lines.push('', '## Transcript appendix', '');
   for (const call of brief.transcriptAppendix) {
